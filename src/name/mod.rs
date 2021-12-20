@@ -12,7 +12,7 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-//! Implementation of data structures relateding to domain names.
+//! Implementation of data structures related to domain names.
 
 use std::alloc::{self, Layout};
 use std::fmt;
