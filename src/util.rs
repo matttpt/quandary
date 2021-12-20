@@ -12,5 +12,16 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-pub mod name;
-mod util;
+//! Crate-private utilities.
+
+/// A wrapper around [`str`] references whose [`PartialEq`] and [`Eq`]
+/// implementations are ASCII-case-insensitive.
+pub struct Caseless<'a>(pub &'a str);
+
+impl PartialEq for Caseless<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq_ignore_ascii_case(other.0)
+    }
+}
+
+impl Eq for Caseless<'_> {}
