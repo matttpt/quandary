@@ -25,3 +25,14 @@ impl PartialEq for Caseless<'_> {
 }
 
 impl Eq for Caseless<'_> {}
+
+/// Converts a nibble into an ASCII hex character. Lower-case hex digits
+/// are used. The passed value must be less than 16.
+pub fn nibble_to_ascii_hex_digit(nibble: u8) -> u8 {
+    assert!(nibble < 16);
+    if nibble < 10 {
+        b'0' + nibble
+    } else {
+        b'a' + nibble - 10
+    }
+}

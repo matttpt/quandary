@@ -12,7 +12,10 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-pub mod class;
-pub mod name;
-pub mod rr;
-mod util;
+//! Data structures and routines for handling DNS resource record data.
+
+// Generic code for RR handling.
+mod cmp;
+mod fmt;
+mod rrset;
+pub use rrset::{Rdata, Rrset, RrsetList, Ttl, Type};
