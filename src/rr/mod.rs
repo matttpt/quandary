@@ -18,4 +18,4 @@
 mod cmp;
 mod fmt;
 mod rrset;
-pub use rrset::{Rdata, Rrset, RrsetList, Ttl, Type};
+pub use rrset::{Rdata, Rrset, RrsetList, RrsetListAddError, Ttl, Type};

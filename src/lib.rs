@@ -16,3 +16,4 @@ pub mod class;
 pub mod name;
 pub mod rr;
 mod util;
+pub mod zone;
