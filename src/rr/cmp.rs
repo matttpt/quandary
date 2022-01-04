@@ -65,6 +65,7 @@ impl Rdata {
                 Type::SOA => soas_equal(self, other),
                 Type::MINFO => minfos_equal(self, other),
                 Type::MX => mxs_equal(self, other),
+                Type::SRV => srvs_equal(self, other),
                 _ => self.octets() == other.octets(),
             }
         }
@@ -125,6 +126,19 @@ fn mxs_equal(first: &[u8], second: &[u8]) -> bool {
         first[0..2] == second[0..2] && names_equal(&first[2..], &second[2..])
     } else {
         // Invalid records; do a bitwise comparison.
+        first == second
+    }
+}
+
+/// Tests two on-the-wire SRV records *with the same length* for
+/// equality. If either contains an invalid domain name, this falls back
+/// to bitwise comparison.
+fn srvs_equal(first: &[u8], second: &[u8]) -> bool {
+    // Same logic as the MX case above.
+    assert!(first.len() == second.len());
+    if first.len() > 6 {
+        first[0..6] == second[0..6] && names_equal(&first[6..], &second[6..])
+    } else {
         first == second
     }
 }
