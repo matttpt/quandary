@@ -205,8 +205,8 @@ mod tests {
     use super::*;
 
     // The *_equal routines all have very similar and straightforward
-    // comparison logic. Since names_equal function is something of a
-    // baseline, so we test it here.
+    // comparison logic. Since the names_equal function is something of
+    // a baseline, we test it here.
 
     #[test]
     fn valid_names_compare_case_insensitively() {
