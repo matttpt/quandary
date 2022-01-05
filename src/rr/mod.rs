@@ -18,4 +18,12 @@
 mod cmp;
 mod fmt;
 mod rrset;
-pub use rrset::{Rdata, Rrset, RrsetList, RrsetListAddError, Ttl, Type};
+pub use rrset::{Rdata, RdataTooLongError, Rrset, RrsetList, RrsetListAddError, Ttl, Type};
+
+// Implementations of RR types.
+mod ipv6;
+mod srv;
+mod std13;
+pub use ipv6::*;
+pub use srv::*;
+pub use std13::*;
