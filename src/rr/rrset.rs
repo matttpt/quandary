@@ -205,6 +205,17 @@ pub enum RrsetListAddError {
     TtlMismatch,
 }
 
+impl fmt::Display for RrsetListAddError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Self::ClassMismatch => f.write_str("CLASS mismatch"),
+            Self::TtlMismatch => f.write_str("TTL mismatch"),
+        }
+    }
+}
+
+impl std::error::Error for RrsetListAddError {}
+
 ////////////////////////////////////////////////////////////////////////
 // RDATA                                                              //
 ////////////////////////////////////////////////////////////////////////
@@ -265,6 +276,14 @@ impl Deref for Rdata {
 /// because it is too long.
 #[derive(Debug, Eq, PartialEq)]
 pub struct RdataTooLongError;
+
+impl fmt::Display for RdataTooLongError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("RDATA is too long")
+    }
+}
+
+impl std::error::Error for RdataTooLongError {}
 
 ////////////////////////////////////////////////////////////////////////
 // RR TYPES                                                           //
