@@ -21,7 +21,7 @@ use std::net::Ipv6Addr;
 use super::{Rdata, ReadRdataError};
 
 ////////////////////////////////////////////////////////////////////////
-// RFC 3596 § 2.1 and 2.2 - IPV6 AAAA RR                              //
+// RFC 3596 §§ 2.1 and 2.2 - IPV6 AAAA RR                             //
 ////////////////////////////////////////////////////////////////////////
 
 /// Serializes an AAAA record into the provided buffer.
@@ -29,7 +29,8 @@ pub fn serialize_aaaa(address: Ipv6Addr, buf: &mut Vec<u8>) {
     buf.extend_from_slice(&address.octets());
 }
 
-/// Checks whether `rdata` is a valid serialized AAAA record.
+/// Checks whether `rdata` is a valid serialized AAAA record. This is
+/// for the implementation of [`Rdata::validate`] and [`Rdata::read`].
 pub(super) fn validate_aaaa(rdata: &Rdata) -> Result<(), ReadRdataError> {
     if rdata.len() == 16 {
         Ok(())

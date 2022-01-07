@@ -15,8 +15,6 @@
 //! Helpers for the [`Rdata::equals`](super::Rdata::equals) and
 //! [`Rdata::validate`](super::Rdata::validate) methods, and their
 //! RR type-specific implementations.
-//!
-//! [RFC 3596]: https://datatracker.ietf.org/doc/html/rfc3596
 
 use super::{Rdata, ReadRdataError};
 use crate::name::Name;
@@ -97,6 +95,8 @@ pub fn test_n_name_fields(first: &[u8], second: &[u8], n: usize) -> Option<Optio
 // HELPER FOR Rdata::validate                                         //
 ////////////////////////////////////////////////////////////////////////
 
+/// Checks whether `name` is a valid seralized domain name. This is for
+/// the implementation of [`Rdata::validate`].
 pub fn validate_name(name: &[u8]) -> Result<(), ReadRdataError> {
     Name::validate_uncompressed_all(name).map_err(Into::into)
 }

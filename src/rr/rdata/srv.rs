@@ -33,8 +33,9 @@ pub fn serialize_srv(priority: u16, weight: u16, port: u16, target: &Name, buf: 
     buf.extend_from_slice(target.wire_repr());
 }
 
-/// Checks whether `rdata` is a valid serialized SRV record.
-pub(crate) fn validate_srv(rdata: &Rdata) -> Result<(), ReadRdataError> {
+/// Checks whether `rdata` is a valid serialized SRV record. This is for
+/// the implementation of [`Rdata::validate`].
+pub(super) fn validate_srv(rdata: &Rdata) -> Result<(), ReadRdataError> {
     if let Some(name_octets) = rdata.get(6..) {
         Name::validate_uncompressed_all(name_octets).map_err(Into::into)
     } else {
@@ -62,8 +63,9 @@ pub(super) fn read_srv(buf: &[u8], cursor: usize) -> Result<Box<Rdata>, ReadRdat
 
 /// Tests two on-the-wire SRV records *with the same length* for
 /// equality. If either contains an invalid domain name, then this falls
-/// back to bitwise comparison.
-pub(crate) fn srvs_equal(first: &Rdata, second: &Rdata) -> bool {
+/// back to bitwise comparison. This is for the implementation of
+/// [`Rdata::equals`].
+pub(super) fn srvs_equal(first: &Rdata, second: &Rdata) -> bool {
     assert!(first.len() == second.len());
     if first.len() > 6 {
         // Note that if names_equal falls back to bitwise comparison,
