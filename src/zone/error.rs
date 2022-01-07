@@ -19,7 +19,7 @@ use std::fmt;
 use crate::rr::RrsetListAddError;
 
 /// Errors that arise during operations on a [`Zone`](super::Zone).
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Error {
     NotInZone,
     ClassMismatch,

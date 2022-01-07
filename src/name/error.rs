@@ -18,7 +18,7 @@ use std::fmt;
 
 /// An error type used to report problems constructing label and name
 /// types.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Error {
     /// Extra data was found after the name while parsing.
     ExtraData,
