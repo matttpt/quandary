@@ -143,6 +143,22 @@ pub fn serialize_soa(
     buf.extend_from_slice(&minimum.to_be_bytes());
 }
 
+/// Validates and decompresses an SOA record. This is for the
+/// implementation of [`Rdata::read`].
+pub(super) fn read_soa(buf: &[u8], cursor: usize) -> Result<Box<Rdata>, ReadRdataError> {
+    let (mname, mlen) = Name::try_from_compressed(buf, cursor)?;
+    let (rname, rlen) = Name::try_from_compressed(buf, cursor + mlen)?;
+    if buf.len() - cursor - mlen - rlen != 20 {
+        Err(ReadRdataError::Other)
+    } else {
+        let mut rdata = Vec::with_capacity(mname.wire_repr().len() + rname.wire_repr().len() + 20);
+        rdata.extend_from_slice(mname.wire_repr());
+        rdata.extend_from_slice(rname.wire_repr());
+        rdata.extend_from_slice(&buf[cursor + mlen + rlen..]);
+        Ok(rdata.try_into().unwrap())
+    }
+}
+
 /// Checks whether `rdata` is a valid serialized SOA record.
 pub(super) fn validate_soa(rdata: &Rdata) -> Result<(), ReadRdataError> {
     let mname_len = Name::validate_uncompressed(rdata)?;
@@ -234,6 +250,21 @@ pub(super) fn validate_minfo(rdata: &Rdata) -> Result<(), ReadRdataError> {
     Name::validate_uncompressed_all(&rdata[rmailbx_len..]).map_err(Into::into)
 }
 
+/// Validates and decompresses an MINFO record. This is for the
+/// implementation of [`Rdata::read`].
+pub(super) fn read_minfo(buf: &[u8], cursor: usize) -> Result<Box<Rdata>, ReadRdataError> {
+    let (rmailbx, rlen) = Name::try_from_compressed(buf, cursor)?;
+    let (emailbx, elen) = Name::try_from_compressed(buf, cursor + rlen)?;
+    if buf.len() - cursor != rlen + elen {
+        Err(ReadRdataError::Other)
+    } else {
+        let mut rdata = Vec::with_capacity(rmailbx.wire_repr().len() + emailbx.wire_repr().len());
+        rdata.extend_from_slice(rmailbx.wire_repr());
+        rdata.extend_from_slice(emailbx.wire_repr());
+        Ok(rdata.try_into().unwrap())
+    }
+}
+
 /// Tests two on-the-wire MINFO records for equality, falling back to
 /// bitwise comparison if either is invalid.
 pub(super) fn minfos_equal(first: &Rdata, second: &Rdata) -> bool {
@@ -258,6 +289,24 @@ pub(super) fn validate_mx(rdata: &Rdata) -> Result<(), ReadRdataError> {
         Name::validate_uncompressed_all(exchange_octets).map_err(Into::into)
     } else {
         Err(ReadRdataError::Other)
+    }
+}
+
+/// Validates and decompresses an MX record. This is for the
+/// implementation of [`Rdata::read`].
+pub(super) fn read_mx(buf: &[u8], cursor: usize) -> Result<Box<Rdata>, ReadRdataError> {
+    if buf.len() - cursor < 2 {
+        Err(ReadRdataError::Other)
+    } else {
+        let (exchange, len) = Name::try_from_compressed(buf, cursor + 2)?;
+        if buf.len() - cursor != len + 2 {
+            Err(ReadRdataError::Other)
+        } else {
+            let mut rdata = Vec::with_capacity(2 + exchange.wire_repr().len());
+            rdata.extend_from_slice(&buf[cursor..cursor + 2]);
+            rdata.extend_from_slice(exchange.wire_repr());
+            Ok(rdata.try_into().unwrap())
+        }
     }
 }
 

@@ -14,6 +14,7 @@
 
 //! Implementation of the [`Rdata`] type and DNS RDATA processing.
 
+use std::borrow::Cow;
 use std::fmt::{self, Write};
 use std::ops::Deref;
 
@@ -121,6 +122,71 @@ impl Rdata {
             Type::AAAA => validate_aaaa(self),
             Type::SRV => validate_srv(self),
             _ => Ok(()),
+        }
+    }
+
+    /// Reads RDATA from a message, validating it while also
+    /// decompressing any embedded domain names, if compressed domain
+    /// names are allowed for the RR type.
+    ///
+    /// RDATA of type `rr_type` and length `rdlength` is read starting
+    /// from `&message[cursor]`. The behavior is as follows:
+    ///
+    /// * For recognized RR types that may contain embedded compressed
+    ///   domain names, any such domain names are decompressed and the
+    ///   RDATA is checked for overall validity. A new buffer for the
+    ///   uncompressed RDATA is allocated.
+    /// * For recognized RR types that do not contain embedded
+    ///   compressed domain names, only validation is performed. A
+    ///   reference to the existing buffer is returned.
+    /// * For unrecognized RR types, no validation is performed and a
+    ///   reference to the existing buffer is returned.
+    ///
+    /// Per [RFC 3597 § 4], only RDATA of types defined by [RFC 1035]
+    /// may contain compressed names, and several more should be subject
+    /// to decompression on the receiving end to maintain compatibility
+    /// with older software. This method follows [RFC 3597 § 4]'s
+    /// prescriptions, with the exception that RP, AFSDB, RT, SIG, PX,
+    /// NXT, and NAPTR RDATA are not currently recognized and will not
+    /// be subject to decompression. (This is a TODO item.)
+    ///
+    /// [RFC 1035]: https://datatracker.ietf.org/doc/html/rfc1035
+    /// [RFC 3597 § 4]: https://datatracker.ietf.org/doc/html/rfc3597#section-4
+    pub fn read(
+        rr_type: Type,
+        message: &[u8],
+        cursor: usize,
+        rdlength: u16,
+    ) -> Result<Cow<Rdata>, ReadRdataError> {
+        let buf = &message[..cursor + rdlength as usize];
+        let rdata = (&buf[cursor..]).try_into().unwrap();
+        let with_decompression =
+            |reader: fn(&[u8], usize) -> Result<Box<Rdata>, ReadRdataError>| {
+                reader(buf, cursor).map(Cow::Owned)
+            };
+        let without_decompression = |validator: fn(&Rdata) -> Result<(), ReadRdataError>| {
+            validator(rdata).and(Ok(Cow::Borrowed(rdata)))
+        };
+        match rr_type {
+            Type::NS
+            | Type::MD
+            | Type::MF
+            | Type::CNAME
+            | Type::MB
+            | Type::MG
+            | Type::MR
+            | Type::PTR => with_decompression(helpers::read_name_rdata),
+            Type::A => without_decompression(validate_a),
+            Type::SOA => with_decompression(read_soa),
+            // For NULL, there is no validation to do!
+            Type::WKS => without_decompression(validate_wks),
+            Type::HINFO => without_decompression(validate_hinfo),
+            Type::MINFO => with_decompression(read_minfo),
+            Type::MX => with_decompression(read_mx),
+            Type::TXT => without_decompression(validate_txt),
+            Type::AAAA => without_decompression(validate_aaaa),
+            Type::SRV => with_decompression(read_srv),
+            _ => Ok(Cow::Borrowed(rdata)),
         }
     }
 

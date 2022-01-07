@@ -18,7 +18,7 @@
 //!
 //! [RFC 3596]: https://datatracker.ietf.org/doc/html/rfc3596
 
-use super::ReadRdataError;
+use super::{Rdata, ReadRdataError};
 use crate::name::Name;
 
 ////////////////////////////////////////////////////////////////////////
@@ -99,6 +99,21 @@ pub fn test_n_name_fields(first: &[u8], second: &[u8], n: usize) -> Option<Optio
 
 pub fn validate_name(name: &[u8]) -> Result<(), ReadRdataError> {
     Name::validate_uncompressed_all(name).map_err(Into::into)
+}
+
+////////////////////////////////////////////////////////////////////////
+// HELPER FOR Rdata::read                                             //
+////////////////////////////////////////////////////////////////////////
+
+/// Validates and decompresses RDATA consisting of a single domain name.
+/// This is for the implementation of [`Rdata::read`].
+pub fn read_name_rdata(buf: &[u8], cursor: usize) -> Result<Box<Rdata>, ReadRdataError> {
+    let (name, len) = Name::try_from_compressed(buf, cursor)?;
+    if buf.len() - cursor != len {
+        Err(ReadRdataError::Other)
+    } else {
+        Ok(<&Rdata>::try_from(name.wire_repr()).unwrap().to_owned())
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////

@@ -42,6 +42,24 @@ pub(crate) fn validate_srv(rdata: &Rdata) -> Result<(), ReadRdataError> {
     }
 }
 
+/// Validates and decompresses an SRV record. This is for the
+/// implementation of [`Rdata::read`].
+pub(super) fn read_srv(buf: &[u8], cursor: usize) -> Result<Box<Rdata>, ReadRdataError> {
+    if buf.len() - cursor < 6 {
+        Err(ReadRdataError::Other)
+    } else {
+        let (exchange, len) = Name::try_from_compressed(buf, cursor + 6)?;
+        if buf.len() - cursor != len + 6 {
+            Err(ReadRdataError::Other)
+        } else {
+            let mut rdata = Vec::with_capacity(6 + exchange.wire_repr().len());
+            rdata.extend_from_slice(&buf[cursor..cursor + 6]);
+            rdata.extend_from_slice(exchange.wire_repr());
+            Ok(rdata.try_into().unwrap())
+        }
+    }
+}
+
 /// Tests two on-the-wire SRV records *with the same length* for
 /// equality. If either contains an invalid domain name, then this falls
 /// back to bitwise comparison.
