@@ -96,7 +96,7 @@ impl ValidationIssue<'_> {
 impl fmt::Display for ValidationIssue<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Self::MissingApexSoa => f.write_str("the zone is missing a SOA record"),
+            Self::MissingApexSoa => f.write_str("the zone is missing an SOA record"),
             Self::TooManyApexSoas => {
                 f.write_str("the zone has too many SOA records (precisely one is needed)")
             }

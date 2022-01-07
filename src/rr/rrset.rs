@@ -231,7 +231,7 @@ pub enum RrsetListAddError {
 impl fmt::Display for RrsetListAddError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Self::ClassMismatch => f.write_str("CLASS mismatch"),
+            Self::ClassMismatch => f.write_str("class mismatch"),
             Self::TtlMismatch => f.write_str("TTL mismatch"),
         }
     }
