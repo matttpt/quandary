@@ -1,4 +1,4 @@
-// Copyright 2021 Matthew Ingwersen.
+// Copyright 2022 Matthew Ingwersen.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you
 // may not use this file except in compliance with the License. You may
@@ -12,134 +12,27 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-//! Implementation of equality for [`Rdata`].
+//! Helpers for the [`Rdata::equals`](super::Rdata::equals) and
+//! [`Rdata::validate`](super::Rdata::validate) methods, and their
+//! RR type-specific implementations.
 //!
-//! [RFC 3597 § 6] specifies that RRs of unknown type are equal when
-//! their RDATA is bitwise equal, and that new RR types should not have
-//! type-specific comparison rules. This means that embedded domain
-//! names are henceforth compared in a case-sensitive manner! Therefore,
-//! only types that (1) predate the RFC and (2) embed domain names need
-//! to have special comparison logic.
-//!
-//! The [`Rdata::equals`] method, implemented in this module, compares
-//! RDATA, performing case-insensitive comparison of domain names only
-//! in RR types that are old enough to require this.
-//!
-//! [RFC 3597 § 6]: https://datatracker.ietf.org/doc/html/rfc3597#section-6
-//! [RFC 3597 § 7]: https://datatracker.ietf.org/doc/html/rfc3597#section-7
+//! [RFC 3596]: https://datatracker.ietf.org/doc/html/rfc3596
 
-use super::{Rdata, Type};
+use super::ReadRdataError;
 use crate::name::Name;
 
-impl Rdata {
-    /// Compares this [`Rdata`] to another, assuming that they are both
-    /// of type `rr_type`. This implements special logic for types
-    /// introduced before RFC 3597 that contain domain names, in which
-    /// the domain names must be compared case-insensitively.
-    /// [RFC 3597 § 6] stipulated that all RDATA should henceforth be
-    /// compared bitwise, and thus a bitwise comparison is used for all
-    /// later types.
-    ///
-    /// If, in the process of comparing domain names case-insensitively,
-    /// one of the [`Rdata`]s is found to be invalid, this falls back to
-    /// a bitwise comparison of the entire [`Rdata`]s.
-    ///
-    /// [RFC 3597 § 6]: https://datatracker.ietf.org/doc/html/rfc3597#section-6
-    pub fn equals(&self, other: &Self, rr_type: Type) -> bool {
-        if self.octets().len() != other.octets().len() {
-            // Since equal embedded domain names are always the same
-            // length (even if they contain octets of differing ASCII
-            // case), the RDATAs can't be equal if they have differing
-            // lengths.
-            false
-        } else {
-            match rr_type {
-                Type::NS
-                | Type::MD
-                | Type::MF
-                | Type::CNAME
-                | Type::MB
-                | Type::MG
-                | Type::MR
-                | Type::PTR => names_equal(self, other),
-                Type::SOA => soas_equal(self, other),
-                Type::MINFO => minfos_equal(self, other),
-                Type::MX => mxs_equal(self, other),
-                Type::SRV => srvs_equal(self, other),
-                _ => self.octets() == other.octets(),
-            }
-        }
-    }
-}
+////////////////////////////////////////////////////////////////////////
+// HELPERS FOR Rdata::equals AND TYPE-SPECIFIC IMPLEMENTATIONS        //
+////////////////////////////////////////////////////////////////////////
 
 /// Tests two uncompressed on-the-wire names for equality, falling back
 /// to bitwise comparison if either is invalid.
-fn names_equal(first: &[u8], second: &[u8]) -> bool {
+pub fn names_equal(first: &[u8], second: &[u8]) -> bool {
     match test_n_name_fields(first, second, 1) {
         Some(Some(len)) if len == first.len() => true,
         Some(Some(_)) => first == second, // Invalid since there's extra data
         Some(None) => false,
         None => first == second,
-    }
-}
-
-/// Tests two on-the-wire SOA records *with the same length* for
-/// equality, falling back to bitwise comparison if either is invalid.
-fn soas_equal(first: &[u8], second: &[u8]) -> bool {
-    assert!(first.len() == second.len());
-    match test_n_name_fields(first, second, 2) {
-        Some(Some(len)) => {
-            if first.len() - len != 20 {
-                // The remaining fields are not the right length.
-                // Fall back to bitwise comparison.
-                first == second
-            } else {
-                // Compare the remaining fields bitwise.
-                first[len..] == second[len..]
-            }
-        }
-        Some(None) => false,
-        None => first == second,
-    }
-}
-
-/// Tests two on-the-wire MINFO records for equality, falling back to
-/// bitwise comparison if either is invalid.
-fn minfos_equal(first: &[u8], second: &[u8]) -> bool {
-    match test_n_name_fields(first, second, 2) {
-        Some(Some(len)) if len == first.len() => true,
-        Some(Some(_)) => first == second, // Invalid since there's extra data
-        Some(None) => false,
-        None => first == second,
-    }
-}
-
-/// Tests two on-the-wire MX records *with the same length* for
-/// equality. If either contains an invalid domain name, this falls back
-/// to bitwise comparison.
-fn mxs_equal(first: &[u8], second: &[u8]) -> bool {
-    assert!(first.len() == second.len());
-    if first.len() > 2 {
-        // Note that if names_equal falls back to bitwise comparison,
-        // then we did a bitwise comparison of the whole thing, so we
-        // still did what we said we would!
-        first[0..2] == second[0..2] && names_equal(&first[2..], &second[2..])
-    } else {
-        // Invalid records; do a bitwise comparison.
-        first == second
-    }
-}
-
-/// Tests two on-the-wire SRV records *with the same length* for
-/// equality. If either contains an invalid domain name, this falls back
-/// to bitwise comparison.
-fn srvs_equal(first: &[u8], second: &[u8]) -> bool {
-    // Same logic as the MX case above.
-    assert!(first.len() == second.len());
-    if first.len() > 6 {
-        first[0..6] == second[0..6] && names_equal(&first[6..], &second[6..])
-    } else {
-        first == second
     }
 }
 
@@ -160,7 +53,7 @@ fn srvs_equal(first: &[u8], second: &[u8]) -> bool {
 ///   `false` with no further (re-)comparison.
 /// * `None` if, due to an invalid domain name, we can't make a
 ///   a decision without re-comparing everything bitwise.
-fn test_n_name_fields(first: &[u8], second: &[u8], n: usize) -> Option<Option<usize>> {
+pub fn test_n_name_fields(first: &[u8], second: &[u8], n: usize) -> Option<Option<usize>> {
     let mut offset = 0;
     for _ in 0..n {
         // At this point: all previous fields were valid names and equal
@@ -200,13 +93,21 @@ fn test_n_name_fields(first: &[u8], second: &[u8], n: usize) -> Option<Option<us
     Some(Some(offset))
 }
 
+////////////////////////////////////////////////////////////////////////
+// HELPER FOR Rdata::validate                                         //
+////////////////////////////////////////////////////////////////////////
+
+pub fn validate_name(name: &[u8]) -> Result<(), ReadRdataError> {
+    Name::validate_uncompressed_all(name).map_err(Into::into)
+}
+
+////////////////////////////////////////////////////////////////////////
+// TESTS                                                              //
+////////////////////////////////////////////////////////////////////////
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // The *_equal routines all have very similar and straightforward
-    // comparison logic. Since the names_equal function is something of
-    // a baseline, we test it here.
 
     #[test]
     fn valid_names_compare_case_insensitively() {

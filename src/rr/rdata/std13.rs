@@ -12,8 +12,8 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-//! Implementation of helpers for the RR types from the original DNS
-//! specification, STD 13 ([RFC 1034] and [RFC 1035]).
+//! Helpers for the RR types from the original DNS specification, STD 13
+//! ([RFC 1034] and [RFC 1035]).
 //!
 //! [RFC 1034]: https://datatracker.ietf.org/doc/html/rfc1034
 //! [RFC 1035]: https://datatracker.ietf.org/doc/html/rfc1035
@@ -23,7 +23,8 @@ use std::iter;
 use std::net::Ipv4Addr;
 use std::ops::Deref;
 
-use super::{Rdata, RdataTooLongError};
+use super::helpers;
+use super::{Rdata, RdataTooLongError, ReadRdataError};
 use crate::name::Name;
 
 ////////////////////////////////////////////////////////////////////////
@@ -82,7 +83,7 @@ impl Deref for CharacterString {
 
 /// An error signaling that a `&[u8]` cannot be converted to a
 /// `&CharacterString` because it is too long.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct CharacterStringTooLongError;
 
 impl fmt::Display for CharacterStringTooLongError {
@@ -96,16 +97,16 @@ impl std::error::Error for CharacterStringTooLongError {}
 /// Validates the on-the-wire representation of a `<character-string>`
 /// at the beginning of the provided buffer, returning the length of the
 /// string on the wire when successful.
-fn validate_character_string(octets: &[u8]) -> Option<usize> {
+fn validate_character_string(octets: &[u8]) -> Result<usize, ReadRdataError> {
     if let Some(len) = octets.get(0) {
         let wire_len = 1 + *len as usize;
         if wire_len <= octets.len() {
-            Some(wire_len)
+            Ok(wire_len)
         } else {
-            None
+            Err(ReadRdataError::Other)
         }
     } else {
-        None
+        Err(ReadRdataError::Other)
     }
 }
 
@@ -143,16 +144,34 @@ pub fn serialize_soa(
 }
 
 /// Checks whether `rdata` is a valid serialized SOA record.
-pub fn is_valid_soa(rdata: &Rdata) -> bool {
-    let mname_len = match Name::validate_uncompressed(rdata) {
-        Ok(len) => len,
-        Err(_) => return false,
-    };
-    let rname_len = match Name::validate_uncompressed(&rdata[mname_len..]) {
-        Ok(len) => len,
-        Err(_) => return false,
-    };
-    rdata.len() == 20 + mname_len + rname_len
+pub(super) fn validate_soa(rdata: &Rdata) -> Result<(), ReadRdataError> {
+    let mname_len = Name::validate_uncompressed(rdata)?;
+    let rname_len = Name::validate_uncompressed(&rdata[mname_len..])?;
+    if rdata.len() == 20 + mname_len + rname_len {
+        Ok(())
+    } else {
+        Err(ReadRdataError::Other)
+    }
+}
+
+/// Tests two on-the-wire SOA records *with the same length* for
+/// equality, falling back to bitwise comparison if either is invalid.
+pub(super) fn soas_equal(first: &Rdata, second: &Rdata) -> bool {
+    assert!(first.len() == second.len());
+    match helpers::test_n_name_fields(first, second, 2) {
+        Some(Some(len)) => {
+            if first.len() - len != 20 {
+                // The remaining fields are not the right length.
+                // Fall back to bitwise comparison.
+                first == second
+            } else {
+                // Compare the remaining fields bitwise.
+                first[len..] == second[len..]
+            }
+        }
+        Some(None) => false,
+        None => first == second,
+    }
 }
 
 /// Serializes a WKS record into the provided buffer.
@@ -174,8 +193,12 @@ pub fn serialize_wks(address: Ipv4Addr, protocol: u8, ports: &[u16], buf: &mut V
 }
 
 /// Checks whether `rdata` is a valid serialized WKS record.
-pub fn is_valid_wks(rdata: &Rdata) -> bool {
-    rdata.len() >= 5
+pub(super) fn validate_wks(rdata: &Rdata) -> Result<(), ReadRdataError> {
+    if rdata.len() >= 5 {
+        Ok(())
+    } else {
+        Err(ReadRdataError::Other)
+    }
 }
 
 /// Serializes an HINFO record into the provided buffer.
@@ -188,16 +211,14 @@ pub fn serialize_hinfo(cpu: &CharacterString, os: &CharacterString, buf: &mut Ve
 }
 
 /// Checks whether `rdata` is a valid serialized HINFO record.
-pub fn is_valid_hinfo(rdata: &Rdata) -> bool {
-    let cpu_len = match validate_character_string(rdata) {
-        Some(len) => len,
-        None => return false,
-    };
-    let os_len = match validate_character_string(&rdata[cpu_len..]) {
-        Some(len) => len,
-        None => return false,
-    };
-    rdata.len() == cpu_len + os_len
+pub(super) fn validate_hinfo(rdata: &Rdata) -> Result<(), ReadRdataError> {
+    let cpu_len = validate_character_string(rdata)?;
+    let os_len = validate_character_string(&rdata[cpu_len..])?;
+    if rdata.len() == cpu_len + os_len {
+        Ok(())
+    } else {
+        Err(ReadRdataError::Other)
+    }
 }
 
 /// Serializes an MINFO record into the provided buffer.
@@ -208,11 +229,19 @@ pub fn serialize_minfo(rmailbx: &Name, emailbx: &Name, buf: &mut Vec<u8>) {
 }
 
 /// Checks whether `rdata` is a valid serialized MINFO record.
-pub fn is_valid_minfo(rdata: &Rdata) -> bool {
-    if let Ok(rmailbx_len) = Name::validate_uncompressed(rdata) {
-        Name::validate_uncompressed_all(&rdata[rmailbx_len..]).is_ok()
-    } else {
-        false
+pub(super) fn validate_minfo(rdata: &Rdata) -> Result<(), ReadRdataError> {
+    let rmailbx_len = Name::validate_uncompressed(rdata)?;
+    Name::validate_uncompressed_all(&rdata[rmailbx_len..]).map_err(Into::into)
+}
+
+/// Tests two on-the-wire MINFO records for equality, falling back to
+/// bitwise comparison if either is invalid.
+pub(super) fn minfos_equal(first: &Rdata, second: &Rdata) -> bool {
+    match helpers::test_n_name_fields(first, second, 2) {
+        Some(Some(len)) if len == first.len() => true,
+        Some(Some(_)) => first == second, // Invalid since there's extra data
+        Some(None) => false,
+        None => first == second,
     }
 }
 
@@ -224,13 +253,28 @@ pub fn serialize_mx(preference: u16, name: &Name, buf: &mut Vec<u8>) {
 }
 
 /// Checks whether `rdata` is a valid serialized MX record.
-pub fn is_valid_mx(rdata: &Rdata) -> bool {
-    rdata
-        .get(2..)
-        .map(Name::validate_uncompressed_all)
-        .map(Result::ok)
-        .flatten()
-        .is_some()
+pub(super) fn validate_mx(rdata: &Rdata) -> Result<(), ReadRdataError> {
+    if let Some(exchange_octets) = rdata.get(2..) {
+        Name::validate_uncompressed_all(exchange_octets).map_err(Into::into)
+    } else {
+        Err(ReadRdataError::Other)
+    }
+}
+
+/// Tests two on-the-wire MX records *with the same length* for
+/// equality. If either contains an invalid domain name, this falls back
+/// to bitwise comparison.
+pub(super) fn mxs_equal(first: &Rdata, second: &Rdata) -> bool {
+    assert!(first.len() == second.len());
+    if first.len() > 2 {
+        // Note that if names_equal falls back to bitwise comparison,
+        // then we did a bitwise comparison of the whole thing, so we
+        // still did what we said we would!
+        first[0..2] == second[0..2] && helpers::names_equal(&first[2..], &second[2..])
+    } else {
+        // Invalid records; do a bitwise comparison.
+        first == second
+    }
 }
 
 /// A helper to serialize DNS TXT records.
@@ -247,7 +291,7 @@ pub fn is_valid_mx(rdata: &Rdata) -> bool {
 /// `<character-string>`s are written, no finalization is necessary.
 ///
 /// ```
-/// use quandary::rr::TxtBuilder;
+/// use quandary::rr::rdata::TxtBuilder;
 ///
 /// // Serialize a TXT record with two <character-string>s.
 /// let mut rdata = Vec::new();
@@ -295,24 +339,20 @@ impl<'a> TxtBuilder<'a> {
 }
 
 /// Checks whether `rdata` is a valid serialized TXT record.
-pub fn is_valid_txt(rdata: &Rdata) -> bool {
+pub(super) fn validate_txt(rdata: &Rdata) -> Result<(), ReadRdataError> {
     if rdata.is_empty() {
         // Per RFC 1035 § 3.3.14, a TXT record must have at least one
         // <character-string>.
-        return false;
+        return Err(ReadRdataError::Other);
     }
 
     // NOTE: since validate_character_string() will not return a zero
     // length, this loop will eventually end.
     let mut offset = 0;
     while offset < rdata.len() {
-        if let Some(len) = validate_character_string(&rdata[offset..]) {
-            offset += len;
-        } else {
-            return false;
-        }
+        offset += validate_character_string(&rdata[offset..])?;
     }
-    true
+    Ok(())
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -325,8 +365,12 @@ pub fn serialize_a(address: Ipv4Addr, buf: &mut Vec<u8>) {
 }
 
 /// Checks whether `rdata` is a valid serialized A record.
-pub fn is_valid_a(rdata: &Rdata) -> bool {
-    rdata.len() == 4
+pub(super) fn validate_a(rdata: &Rdata) -> Result<(), ReadRdataError> {
+    if rdata.len() == 4 {
+        Ok(())
+    } else {
+        Err(ReadRdataError::Other)
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////

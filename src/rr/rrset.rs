@@ -1,4 +1,4 @@
-// Copyright 2021 Matthew Ingwersen.
+// Copyright 2022 Matthew Ingwersen.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you
 // may not use this file except in compliance with the License. You may
@@ -12,16 +12,14 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-//! Implementation of RRset-related data structures and types.
+//! Implementation of the RRset-related data structures [`Rrset`] and
+//! [`RrsetList`].
 
-use std::convert::{TryFrom, TryInto};
 use std::fmt;
 use std::iter::FusedIterator;
-use std::ops::Deref;
-use std::str::FromStr;
 
+use super::{Rdata, Ttl, Type};
 use crate::class::Class;
-use crate::util::Caseless;
 
 ////////////////////////////////////////////////////////////////////////
 // RRSETS                                                             //
@@ -105,6 +103,31 @@ impl<'a> Iterator for RdataIterator<'a> {
 }
 
 impl FusedIterator for RdataIterator<'_> {}
+
+impl fmt::Debug for Rrset {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Rrset")
+            .field("rr_type", &self.rr_type)
+            .field("class", &self.class)
+            .field("ttl", &self.ttl)
+            .field("rdatas", &RdatasDebugger(self))
+            .finish()
+    }
+}
+
+/// A wrapper around an [`Rrset`] to print debug output for its
+/// [`Rdata`]s.
+struct RdatasDebugger<'a>(&'a Rrset);
+
+impl fmt::Debug for RdatasDebugger<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut list = f.debug_list();
+        for rdata in self.0.rdatas() {
+            list.entry(&format_args!("{:?}", rdata));
+        }
+        list.finish()
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////
 // RRSET LISTS                                                        //
@@ -193,8 +216,8 @@ impl RrsetList {
 
 /// An error signaling that a record cannot be added to an [`RrsetList`]
 /// since its [`Ttl`] differs from the rest of the records in its
-/// [`Rrset].
-#[derive(Debug, Eq, PartialEq)]
+/// [`Rrset`].
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum RrsetListAddError {
     /// A record cannot be added because its [`Class`] differs from the
     /// rest of the records in the [`RrsetList`].
@@ -215,247 +238,6 @@ impl fmt::Display for RrsetListAddError {
 }
 
 impl std::error::Error for RrsetListAddError {}
-
-////////////////////////////////////////////////////////////////////////
-// RDATA                                                              //
-////////////////////////////////////////////////////////////////////////
-
-/// A type for record RDATA.
-///
-/// The RDATA of a record is limited to 65,535 octets. The `Rdata` type
-/// is a wrapper over `[u8]` that can only be constructed if the
-/// underlying data has a valid length.
-#[derive(Eq, PartialEq)]
-#[repr(transparent)]
-pub struct Rdata {
-    octets: [u8],
-}
-
-impl Rdata {
-    /// Converts a `&[u8]` to a `&Rdata`, without checking the length;
-    /// for internal use only.
-    fn from_unchecked(octets: &[u8]) -> &Self {
-        unsafe { &*(octets as *const [u8] as *const Self) }
-    }
-
-    /// Returns the underlying octet slice.
-    pub fn octets(&self) -> &[u8] {
-        self
-    }
-}
-
-impl<'a> TryFrom<&'a [u8]> for &'a Rdata {
-    type Error = RdataTooLongError;
-
-    fn try_from(octets: &'a [u8]) -> Result<Self, Self::Error> {
-        if octets.len() > (u16::MAX as usize) {
-            Err(RdataTooLongError)
-        } else {
-            Ok(Rdata::from_unchecked(octets))
-        }
-    }
-}
-
-impl<'a, const N: usize> TryFrom<&'a [u8; N]> for &'a Rdata {
-    type Error = RdataTooLongError;
-
-    fn try_from(octets: &'a [u8; N]) -> Result<Self, Self::Error> {
-        octets[..].try_into()
-    }
-}
-
-impl Deref for Rdata {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        &self.octets
-    }
-}
-
-/// An error signaling that a `&[u8]` cannot be converted to a `&Rdata`
-/// because it is too long.
-#[derive(Debug, Eq, PartialEq)]
-pub struct RdataTooLongError;
-
-impl fmt::Display for RdataTooLongError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str("RDATA is too long")
-    }
-}
-
-impl std::error::Error for RdataTooLongError {}
-
-////////////////////////////////////////////////////////////////////////
-// RR TYPES                                                           //
-////////////////////////////////////////////////////////////////////////
-
-/// Represents the RR type of a DNS record.
-///
-/// An RR type is represented on the wire as an unsigned 16-bit integer.
-/// Hence this is basically a wrapper around `u16` with nice
-/// [`Debug`](fmt::Debug), [`Display`](fmt::Display), and [`FromStr`]
-/// implementations for working with the common textual representations
-/// of RR types. In addition, constants for common RR types (e.g.
-/// [`Type::A`] are provided.
-#[derive(Clone, Copy, Eq, Hash, PartialEq, PartialOrd, Ord)]
-pub struct Type(u16);
-
-impl Type {
-    pub const A: Type = Type(1);
-    pub const NS: Type = Type(2);
-    pub const MD: Type = Type(3);
-    pub const MF: Type = Type(4);
-    pub const CNAME: Type = Type(5);
-    pub const SOA: Type = Type(6);
-    pub const MB: Type = Type(7);
-    pub const MG: Type = Type(8);
-    pub const MR: Type = Type(9);
-    pub const NULL: Type = Type(10);
-    pub const WKS: Type = Type(11);
-    pub const PTR: Type = Type(12);
-    pub const HINFO: Type = Type(13);
-    pub const MINFO: Type = Type(14);
-    pub const MX: Type = Type(15);
-    pub const TXT: Type = Type(16);
-    pub const AAAA: Type = Type(28);
-    pub const SRV: Type = Type(33);
-}
-
-impl From<u16> for Type {
-    fn from(raw: u16) -> Self {
-        Self(raw)
-    }
-}
-
-impl From<Type> for u16 {
-    fn from(rr_type: Type) -> Self {
-        rr_type.0
-    }
-}
-
-impl FromStr for Type {
-    type Err = &'static str;
-
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        match Caseless(text) {
-            Caseless("A") => Ok(Self::A),
-            Caseless("NS") => Ok(Self::NS),
-            Caseless("MD") => Ok(Self::MD),
-            Caseless("MF") => Ok(Self::MF),
-            Caseless("CNAME") => Ok(Self::CNAME),
-            Caseless("SOA") => Ok(Self::SOA),
-            Caseless("MB") => Ok(Self::MB),
-            Caseless("MG") => Ok(Self::MG),
-            Caseless("MR") => Ok(Self::MR),
-            Caseless("NULL") => Ok(Self::NULL),
-            Caseless("WKS") => Ok(Self::WKS),
-            Caseless("PTR") => Ok(Self::PTR),
-            Caseless("HINFO") => Ok(Self::HINFO),
-            Caseless("MINFO") => Ok(Self::MINFO),
-            Caseless("MX") => Ok(Self::MX),
-            Caseless("TXT") => Ok(Self::TXT),
-            Caseless("AAAA") => Ok(Self::AAAA),
-            Caseless("SRV") => Ok(Self::SRV),
-            _ => {
-                if text
-                    .get(0..4)
-                    .map_or(false, |prefix| prefix.eq_ignore_ascii_case("TYPE"))
-                {
-                    text[4..]
-                        .parse::<u16>()
-                        .map(Self::from)
-                        .or(Err("type value is not a valid unsigned 16-bit integer"))
-                } else {
-                    Err("unknown type")
-                }
-            }
-        }
-    }
-}
-
-impl fmt::Debug for Type {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self)
-    }
-}
-
-impl fmt::Display for Type {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            Self::A => f.write_str("A"),
-            Self::NS => f.write_str("NS"),
-            Self::MD => f.write_str("MD"),
-            Self::MF => f.write_str("MF"),
-            Self::CNAME => f.write_str("CNAME"),
-            Self::SOA => f.write_str("SOA"),
-            Self::MB => f.write_str("MB"),
-            Self::MG => f.write_str("MG"),
-            Self::MR => f.write_str("MR"),
-            Self::NULL => f.write_str("NULL"),
-            Self::WKS => f.write_str("WKS"),
-            Self::PTR => f.write_str("PTR"),
-            Self::HINFO => f.write_str("HINFO"),
-            Self::MINFO => f.write_str("MINFO"),
-            Self::MX => f.write_str("MX"),
-            Self::TXT => f.write_str("TXT"),
-            Self::AAAA => f.write_str("AAAA"),
-            Self::SRV => f.write_str("SRV"),
-            Self(value) => write!(f, "TYPE{}", value), // RFC 3597 § 5
-        }
-    }
-}
-
-////////////////////////////////////////////////////////////////////////
-// TTLS                                                               //
-////////////////////////////////////////////////////////////////////////
-
-/// The time to live (TTL) of a DNS record.
-///
-/// There are contradictory definitions of the TTL field in [RFC 1035]
-/// (see [erratum 2130]), so [RFC 2181 § 8] clarified that TTL values
-/// are unsigned integers between 0 and 2³¹ - 1, inclusive. Because the
-/// TTL field is 32 bits wide, the most significant bit is zero. A TTL
-/// value received with the most significant bit set is interpreted as
-/// zero.
-///
-/// This type wraps `u32` to implement [RFC 2181 § 8]. The public API
-/// will only instantiate `Ttl` objects whose underlying `u32` values
-/// have the most significant bit set to zero, and `Ttl::from(u32)`
-/// treats TTL wire values with the most significant bit set as zero.
-///
-/// [Erratum 2130]: https://www.rfc-editor.org/errata/eid2130
-/// [RFC 1035]: https://datatracker.ietf.org/doc/html/rfc1035
-/// [RFC 2181 § 8]: https://datatracker.ietf.org/doc/html/rfc2181#section-8
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub struct Ttl(u32);
-
-impl From<u32> for Ttl {
-    fn from(raw: u32) -> Self {
-        if raw > i32::MAX as u32 {
-            Self(0)
-        } else {
-            Self(raw)
-        }
-    }
-}
-
-impl From<Ttl> for u32 {
-    fn from(ttl: Ttl) -> Self {
-        ttl.0
-    }
-}
-
-impl fmt::Debug for Ttl {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl fmt::Display for Ttl {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
 
 ////////////////////////////////////////////////////////////////////////
 // TESTS                                                              //
@@ -549,51 +331,5 @@ mod tests {
             rrsets.add(Type::NS, Class::IN, Ttl::from(7200), domain),
             Err(RrsetListAddError::TtlMismatch)
         );
-    }
-
-    #[test]
-    fn rdata_constructor_accepts_short_slices() {
-        let quite_short = &[0, 1, 2, 3];
-        let quite_short_rdata: &Rdata = quite_short.try_into().unwrap();
-        assert_eq!(quite_short_rdata.octets(), quite_short);
-
-        let almost_too_long = &[0; u16::MAX as usize];
-        assert!(<&Rdata>::try_from(almost_too_long).is_ok());
-    }
-
-    #[test]
-    fn rdata_constructor_rejects_long_slice() {
-        let too_long = [0; u16::MAX as usize + 1];
-        assert_eq!(<&Rdata>::try_from(&too_long[..]), Err(RdataTooLongError));
-    }
-
-    #[test]
-    fn type_displays_according_to_rfc3597() {
-        // TYPE65280 is from the private use range, so it should always
-        // be unknown.
-        let class = Type::from(0xff00);
-        assert_eq!(class.to_string(), "TYPE65280");
-    }
-
-    #[test]
-    fn type_parses_according_to_rfc3597() {
-        // Again, TYPE65280 is from the private use range.
-        let type_a: Type = "TYPE1".parse().unwrap();
-        let type_65280: Type = "TYPE65280".parse().unwrap();
-        assert_eq!(type_a, Type::A);
-        assert_eq!(u16::from(type_65280), 65280);
-    }
-
-    #[test]
-    fn small_ttls_are_not_modified() {
-        let i32_max = i32::MAX as u32;
-        assert_eq!(u32::from(Ttl::from(0)), 0);
-        assert_eq!(u32::from(Ttl::from(23)), 23);
-        assert_eq!(u32::from(Ttl::from(i32_max)), i32_max);
-    }
-
-    #[test]
-    fn large_ttls_become_zero() {
-        assert_eq!(u32::from(Ttl::from(i32::MAX as u32 + 1)), 0);
     }
 }

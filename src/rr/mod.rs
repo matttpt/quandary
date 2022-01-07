@@ -14,16 +14,11 @@
 
 //! Data structures and routines for handling DNS resource record data.
 
-// Generic code for RR handling.
-mod cmp;
-mod fmt;
-mod rrset;
-pub use rrset::{Rdata, RdataTooLongError, Rrset, RrsetList, RrsetListAddError, Ttl, Type};
-
-// Implementations of RR types.
-mod ipv6;
-mod srv;
-mod std13;
-pub use ipv6::*;
-pub use srv::*;
-pub use std13::*;
+pub mod rdata;
+mod rr_type;
+pub mod rrset;
+mod ttl;
+pub use rdata::Rdata;
+pub use rr_type::Type;
+pub use rrset::{Rrset, RrsetList};
+pub use ttl::Ttl;

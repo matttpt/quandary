@@ -16,7 +16,7 @@
 
 use std::fmt;
 
-use crate::rr::RrsetListAddError;
+use crate::rr::rrset::RrsetListAddError;
 
 /// Errors that arise during operations on a [`Zone`](super::Zone).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

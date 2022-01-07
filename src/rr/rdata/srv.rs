@@ -12,11 +12,12 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-//! Implementation of helpers for the [RFC 2782] RR type, SRV.
+//! Helpers for the [RFC 2782] RR type, SRV.
 //!
 //! [RFC 2782]: https://datatracker.ietf.org/doc/html/rfc2782
 
-use super::Rdata;
+use super::helpers;
+use super::{Rdata, ReadRdataError};
 use crate::name::Name;
 
 ////////////////////////////////////////////////////////////////////////
@@ -33,11 +34,26 @@ pub fn serialize_srv(priority: u16, weight: u16, port: u16, target: &Name, buf: 
 }
 
 /// Checks whether `rdata` is a valid serialized SRV record.
-pub fn is_valid_srv(rdata: &Rdata) -> bool {
-    rdata
-        .get(6..)
-        .map(Name::validate_uncompressed_all)
-        .map(Result::ok)
-        .flatten()
-        .is_some()
+pub(crate) fn validate_srv(rdata: &Rdata) -> Result<(), ReadRdataError> {
+    if let Some(name_octets) = rdata.get(6..) {
+        Name::validate_uncompressed_all(name_octets).map_err(Into::into)
+    } else {
+        Err(ReadRdataError::Other)
+    }
+}
+
+/// Tests two on-the-wire SRV records *with the same length* for
+/// equality. If either contains an invalid domain name, then this falls
+/// back to bitwise comparison.
+pub(crate) fn srvs_equal(first: &Rdata, second: &Rdata) -> bool {
+    assert!(first.len() == second.len());
+    if first.len() > 6 {
+        // Note that if names_equal falls back to bitwise comparison,
+        // then we did a bitwise comparison of the whole thing, so we
+        // still did what we said we would!
+        first[0..6] == second[0..6] && helpers::names_equal(&first[6..], &second[6..])
+    } else {
+        // Invalid records; do a bitwise comparison.
+        first == second
+    }
 }
