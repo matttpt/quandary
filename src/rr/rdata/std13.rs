@@ -411,6 +411,17 @@ mod tests {
     }
 
     #[test]
+    fn txtbuilder_works() {
+        let mut rdata = Vec::new();
+        let mut builder = TxtBuilder::new(&mut rdata);
+        let cs_a = b"a character-string".try_into().unwrap();
+        let cs_b = b"another character-string".try_into().unwrap();
+        builder.try_push(cs_a).unwrap();
+        builder.try_push(cs_b).unwrap();
+        assert_eq!(rdata, b"\x12a character-string\x18another character-string");
+    }
+
+    #[test]
     fn txtbuilder_rejects_rdata_overflow() {
         let mut rdata = Vec::new();
         let mut builder = TxtBuilder::new(&mut rdata);
