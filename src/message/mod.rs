@@ -1,4 +1,4 @@
-// Copyright 2021 Matthew Ingwersen.
+// Copyright 2022 Matthew Ingwersen.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you
 // may not use this file except in compliance with the License. You may
@@ -12,9 +12,7 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-pub mod class;
-pub mod message;
-pub mod name;
-pub mod rr;
-mod util;
-pub mod zone;
+//! Implementation of reading and writing of DNS messages.
+
+mod question;
+pub use question::{Qclass, Qtype, Question};

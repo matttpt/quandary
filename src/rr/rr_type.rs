@@ -17,6 +17,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+use crate::message::Qtype;
 use crate::util::Caseless;
 
 ////////////////////////////////////////////////////////////////////////
@@ -65,6 +66,12 @@ impl From<u16> for Type {
 impl From<Type> for u16 {
     fn from(rr_type: Type) -> Self {
         rr_type.0
+    }
+}
+
+impl From<Qtype> for Type {
+    fn from(qtype: Qtype) -> Self {
+        Self(qtype.into())
     }
 }
 

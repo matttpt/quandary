@@ -17,6 +17,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+use crate::message::Qclass;
 use crate::util::Caseless;
 
 /// Represents a class in the DNS.
@@ -46,6 +47,12 @@ impl From<u16> for Class {
 impl From<Class> for u16 {
     fn from(class: Class) -> Self {
         class.0
+    }
+}
+
+impl From<Qclass> for Class {
+    fn from(qclass: Qclass) -> Self {
+        Self(qclass.into())
     }
 }
 
