@@ -27,9 +27,11 @@ mod helpers;
 
 // Implementations of RR types.
 mod ipv6;
+mod opt;
 mod srv;
 mod std13;
 pub use ipv6::*;
+pub use opt::*;
 pub use srv::*;
 pub use std13::*;
 
@@ -70,6 +72,12 @@ impl Rdata {
     /// If, in the process of comparing domain names case-insensitively,
     /// one of the [`Rdata`]s is found to be invalid, this falls back to
     /// a bitwise comparison of the entire [`Rdata`]s.
+    ///
+    /// *Warning:* OPT pseudo-record RDATA will be compared bitwise, not
+    /// semantically. Since these do not belong in DNS zone data and
+    /// may appear only once in a DNS message, there is probably not a
+    /// use case for comparing them at all; thus this method sticks with
+    /// the default bitwise comparison.
     ///
     /// [RFC 3597 § 6]: https://datatracker.ietf.org/doc/html/rfc3597#section-6
     pub fn equals(&self, other: &Self, rr_type: Type) -> bool {
@@ -121,6 +129,7 @@ impl Rdata {
             Type::TXT => validate_txt(self),
             Type::AAAA => validate_aaaa(self),
             Type::SRV => validate_srv(self),
+            Type::OPT => validate_opt(self),
             _ => Ok(()),
         }
     }
@@ -186,6 +195,7 @@ impl Rdata {
             Type::TXT => without_decompression(validate_txt),
             Type::AAAA => without_decompression(validate_aaaa),
             Type::SRV => with_decompression(read_srv),
+            Type::OPT => without_decompression(validate_opt),
             _ => Ok(Cow::Borrowed(rdata)),
         }
     }

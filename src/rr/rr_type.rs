@@ -53,6 +53,7 @@ impl Type {
     pub const TXT: Type = Type(16);
     pub const AAAA: Type = Type(28);
     pub const SRV: Type = Type(33);
+    pub const OPT: Type = Type(41);
 }
 
 impl From<u16> for Type {
@@ -90,6 +91,7 @@ impl FromStr for Type {
             Caseless("TXT") => Ok(Self::TXT),
             Caseless("AAAA") => Ok(Self::AAAA),
             Caseless("SRV") => Ok(Self::SRV),
+            Caseless("OPT") => Ok(Self::OPT),
             _ => {
                 if text
                     .get(0..4)
@@ -134,6 +136,7 @@ impl fmt::Display for Type {
             Self::TXT => f.write_str("TXT"),
             Self::AAAA => f.write_str("AAAA"),
             Self::SRV => f.write_str("SRV"),
+            Self::OPT => f.write_str("OPT"),
             Self(value) => write!(f, "TYPE{}", value), // RFC 3597 § 5
         }
     }
