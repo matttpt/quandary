@@ -14,9 +14,12 @@
 
 //! Implementation of reading and writing of DNS messages.
 
+mod constants;
 mod opcode;
 mod question;
 mod rcode;
+pub mod reader;
 pub use opcode::{IntoOpcodeError, Opcode};
 pub use question::{Qclass, Qtype, Question};
 pub use rcode::{IntoRcodeError, Rcode};
+pub use reader::Reader;
