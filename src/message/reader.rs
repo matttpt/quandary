@@ -135,7 +135,7 @@ impl<'a> Reader<'a> {
     ///
     /// This method is atomic, in that the cursor is not changed on
     /// failure.
-    pub fn read_rr(&mut self) -> Result<ReadRr> {
+    pub fn read_rr(&mut self) -> Result<ReadRr<'a>> {
         let (owner, owner_len) =
             Name::try_from_compressed(self.octets, self.cursor).map_err(Error::InvalidOwner)?;
         let owner_end = self.cursor + owner_len;
