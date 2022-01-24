@@ -117,9 +117,9 @@ impl<'a> Reader<'a> {
     ///
     /// This method is atomic, in that the cursor is not changed on
     /// failure.
-    pub fn read_question(&mut self) -> Result<Question, ReadError> {
+    pub fn read_question(&mut self) -> Result<Question> {
         let (qname, qname_len) =
-            Name::try_from_compressed(self.octets, self.cursor).map_err(ReadError::InvalidOwner)?;
+            Name::try_from_compressed(self.octets, self.cursor).map_err(Error::InvalidOwner)?;
         let qname_end = self.cursor + qname_len;
         let qtype = read_u16(&self.octets[qname_end..])?.into();
         let qclass = read_u16(&self.octets[qname_end + 2..])?.into();
@@ -135,9 +135,9 @@ impl<'a> Reader<'a> {
     ///
     /// This method is atomic, in that the cursor is not changed on
     /// failure.
-    pub fn read_rr(&mut self) -> Result<ReadRr, ReadError> {
+    pub fn read_rr(&mut self) -> Result<ReadRr> {
         let (owner, owner_len) =
-            Name::try_from_compressed(self.octets, self.cursor).map_err(ReadError::InvalidOwner)?;
+            Name::try_from_compressed(self.octets, self.cursor).map_err(Error::InvalidOwner)?;
         let owner_end = self.cursor + owner_len;
         let rr_type = read_u16(&self.octets[owner_end..])?.into();
         let class = read_u16(&self.octets[owner_end + 2..])?.into();
@@ -162,16 +162,16 @@ impl<'a> Reader<'a> {
 }
 
 impl<'a> TryFrom<&'a [u8]> for Reader<'a> {
-    type Error = ReadError;
+    type Error = Error;
 
-    fn try_from(octets: &'a [u8]) -> Result<Self, Self::Error> {
+    fn try_from(octets: &'a [u8]) -> Result<Self> {
         if octets.len() >= HEADER_SIZE {
             Ok(Self {
                 octets,
                 cursor: HEADER_SIZE,
             })
         } else {
-            Err(ReadError::HeaderTooShort)
+            Err(Error::HeaderTooShort)
         }
     }
 }
@@ -201,20 +201,20 @@ impl fmt::Debug for Reader<'_> {
 ////////////////////////////////////////////////////////////////////////
 
 /// Reads a network-byte-order `u16` from the beginning of `octets`.
-fn read_u16(octets: &[u8]) -> Result<u16, ReadError> {
+fn read_u16(octets: &[u8]) -> Result<u16> {
     let array = octets
         .get(0..2)
-        .ok_or(ReadError::UnexpectedEomInField)?
+        .ok_or(Error::UnexpectedEomInField)?
         .try_into()
         .unwrap();
     Ok(u16::from_be_bytes(array))
 }
 
 /// Reads a network-byte-order `u32` from the beginning of `octets`.
-fn read_u32(octets: &[u8]) -> Result<u32, ReadError> {
+fn read_u32(octets: &[u8]) -> Result<u32> {
     let array = octets
         .get(0..4)
-        .ok_or(ReadError::UnexpectedEomInField)?
+        .ok_or(Error::UnexpectedEomInField)?
         .try_into()
         .unwrap();
     Ok(u32::from_be_bytes(array))
@@ -248,20 +248,20 @@ pub struct ReadRr<'a> {
 /// An error signaling that a [`Question`] or resource record could not
 /// be read.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum ReadError {
+pub enum Error {
     HeaderTooShort,
     UnexpectedEomInField,
     InvalidOwner(name::Error),
     InvalidRdata(ReadRdataError),
 }
 
-impl From<ReadRdataError> for ReadError {
+impl From<ReadRdataError> for Error {
     fn from(err: ReadRdataError) -> Self {
         Self::InvalidRdata(err)
     }
 }
 
-impl fmt::Display for ReadError {
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Self::HeaderTooShort => f.write_str("header too short"),
@@ -272,7 +272,10 @@ impl fmt::Display for ReadError {
     }
 }
 
-impl std::error::Error for ReadError {}
+impl std::error::Error for Error {}
+
+/// The type returned by fallible [`Reader`] methods.
+pub type Result<T> = std::result::Result<T, Error>;
 
 ////////////////////////////////////////////////////////////////////////
 // TESTS                                                              //
@@ -351,10 +354,7 @@ mod tests {
     fn reader_constructor_rejects_short_message() {
         for size in 0..HEADER_SIZE {
             let buf = vec![0; size];
-            assert_eq!(
-                Reader::try_from(buf.as_slice()),
-                Err(ReadError::HeaderTooShort)
-            );
+            assert_eq!(Reader::try_from(buf.as_slice()), Err(Error::HeaderTooShort));
         }
     }
 }
