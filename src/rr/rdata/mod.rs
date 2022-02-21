@@ -154,10 +154,15 @@ impl Rdata {
     /// Per [RFC 3597 § 4], only RDATA of types defined by [RFC 1035]
     /// may contain compressed names, and several more should be subject
     /// to decompression on the receiving end to maintain compatibility
-    /// with older software. This method follows [RFC 3597 § 4]'s
+    /// with older software. This function follows [RFC 3597 § 4]'s
     /// prescriptions, with the exception that RP, AFSDB, RT, SIG, PX,
     /// NXT, and NAPTR RDATA are not currently recognized and will not
     /// be subject to decompression. (This is a TODO item.)
+    ///
+    /// If the remaining part of the message is not `rdlength` long,
+    /// this function will fail with [`ReadRdataError::UnexpectedEom`],
+    /// rather than panic. Thus it's okay to call this without
+    /// validating `rdlength` first.
     ///
     /// [RFC 1035]: https://datatracker.ietf.org/doc/html/rfc1035
     /// [RFC 3597 § 4]: https://datatracker.ietf.org/doc/html/rfc3597#section-4
@@ -167,7 +172,11 @@ impl Rdata {
         cursor: usize,
         rdlength: u16,
     ) -> Result<Cow<Rdata>, ReadRdataError> {
-        let buf = &message[..cursor + rdlength as usize];
+        let end = cursor + rdlength as usize;
+        if end > message.len() {
+            return Err(ReadRdataError::UnexpectedEom);
+        }
+        let buf = &message[..end];
         let rdata = (&buf[cursor..]).try_into().unwrap();
         let with_decompression =
             |reader: fn(&[u8], usize) -> Result<Box<Rdata>, ReadRdataError>| {
@@ -300,6 +309,7 @@ impl std::error::Error for RdataTooLongError {}
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ReadRdataError {
     InvalidName(name::Error),
+    UnexpectedEom,
     Other,
 }
 
@@ -307,6 +317,7 @@ impl fmt::Display for ReadRdataError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::InvalidName(err) => write!(f, "invalid embedded domain name: {}", err),
+            Self::UnexpectedEom => f.write_str("unexpected end of message in RDATA"),
             Self::Other => f.write_str("invalid RDATA"),
         }
     }
@@ -342,5 +353,14 @@ mod tests {
     fn rdata_constructor_rejects_long_slice() {
         let too_long = [0; u16::MAX as usize + 1];
         assert_eq!(<&Rdata>::try_from(&too_long[..]), Err(RdataTooLongError));
+    }
+
+    #[test]
+    fn read_checks_if_message_is_long_enough() {
+        let too_short = [0; 4];
+        assert_eq!(
+            Rdata::read(Type::A, &too_short[..], 2, 4),
+            Err(ReadRdataError::UnexpectedEom)
+        );
     }
 }
