@@ -121,9 +121,9 @@ impl Name {
 /// Private allocation/initialization helpers for use within this module.
 impl Name {
     /// Converts a pointer to a buffer in which a name has been
-    /// initialized and size information into a pointer to a `Name`.
-    /// Since `Name` is a dynamically sized type, this will be a fat
-    /// pointer that includes the size information for the `Name`.
+    /// initialized and size information into a const pointer to a
+    /// `Name`. Since `Name` is a dynamically sized type, this will be a
+    /// fat pointer that includes the size information for the `Name`.
     ///
     /// # Safety
     ///
@@ -136,14 +136,30 @@ impl Name {
     /// * `n_labels` and `wire_len` are correct; and
     /// * the `Name` object must be no larger than [`isize::MAX`]
     ///   (which will be satisfied if the first condition is met).
-    /// * there are no memory accessess through other pointers.
-    fn make_fat_pointer(octets: *mut u8, n_labels: usize, wire_len: usize) -> *mut Name {
-        // NOTE: if/when std::ptr::from_raw_parts_mut becomes available,
-        // use it instead. This is how the slice-dst crate works, and
-        // I'm not aware of a better way of doing this given Rust's
-        // current lack of support for custom DSTs, but this is
-        // uncomfortably hacky and, I think, relies on the
-        // implementation details.
+    /// * the data is not mutated during the lifetime of the created
+    ///   reference.
+    fn make_fat_pointer(octets: *const u8, n_labels: usize, wire_len: usize) -> *const Name {
+        // NOTE: if/when std::ptr::from_raw_parts becomes available, use
+        // it instead. This is how the slice-dst crate works, and I'm
+        // not aware of a better way of doing this given Rust's current
+        // lack of support for custom DSTs, but this is uncomfortably
+        // hacky and, I think, relies on the implementation details.
+        ptr::slice_from_raw_parts(octets, n_labels + wire_len) as *const Name
+    }
+
+    /// The mutable variant of [`Name::make_fat_pointer`].
+    ///
+    /// # Safety
+    ///
+    /// The safety points made for [`Name::make_fat_pointer`] apply with
+    /// one difference. It is not enough to ensure that the data is not
+    /// mutated during the lifetime of the created reference. One must
+    /// ensure that there are no accesses whatsoever (reads or writes)
+    /// through other pointers not derived from the one returned during
+    /// lifetime of the created reference.
+    fn make_fat_pointer_mut(octets: *mut u8, n_labels: usize, wire_len: usize) -> *mut Name {
+        // NOTE: if/when std::ptr::from_raw_parts becomes available, use
+        // it. See the note in Name::make_fat_pointer.
         ptr::slice_from_raw_parts_mut(octets, n_labels + wire_len) as *mut Name
     }
 
@@ -242,7 +258,13 @@ impl Name {
     /// Returns a reference to a `Name` representing the DNS root, `.`.
     pub fn root() -> &'static Name {
         static ROOT_NAME_REPR: [u8; 3] = [1, 0, 0];
-        unsafe { &*(&ROOT_NAME_REPR as *const [u8] as *const Name) }
+        unsafe {
+            // SAFETY: this is a valid Name value; the data is within a
+            // single object/allocation; the number of labels and wire
+            // length are indeed both 1; and the data will not ever be
+            // mutated.
+            &*Name::make_fat_pointer(&ROOT_NAME_REPR as *const [u8] as *const u8, 1, 1)
+        }
     }
 
     /// Returns the superdomain obtained by skipping the first `skip`
@@ -497,7 +519,7 @@ unsafe fn new_boxed_name(wire_len: usize, label_offsets: &[u8], slices: &[&[u8]]
     let layout = Layout::from_size_align_unchecked(size, 1);
     let allocation = alloc::alloc(layout);
     Name::initialize_into(allocation, label_offsets, slices);
-    let name_ptr = Name::make_fat_pointer(allocation, n_labels, wire_len);
+    let name_ptr = Name::make_fat_pointer_mut(allocation, n_labels, wire_len);
     Box::from_raw(name_ptr)
 }
 
@@ -601,6 +623,14 @@ mod tests {
     #[test]
     fn root_is_root() {
         assert!(Name::root().is_root());
+    }
+
+    #[test]
+    fn root_has_expected_characteristics() {
+        let root = Name::root();
+        assert_eq!(root.len(), 1);
+        assert_eq!(root.label_offsets(), &[0]);
+        assert_eq!(root.wire_repr(), &[0]);
     }
 
     #[test]
