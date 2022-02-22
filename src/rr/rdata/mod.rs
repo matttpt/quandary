@@ -57,6 +57,11 @@ impl Rdata {
         unsafe { &*(octets as *const [u8] as *const Self) }
     }
 
+    /// Returns an empty `&Rdata`.
+    pub fn empty() -> &'static Self {
+        Self::from_unchecked(&[])
+    }
+
     /// Compares this [`Rdata`] to another, assuming that they are both
     /// of type `rr_type`.
     ///
