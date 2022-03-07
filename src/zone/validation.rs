@@ -199,8 +199,7 @@ fn scan_node<'a>(
             let name = rdata
                 .get(2..)
                 .map(Name::try_from_uncompressed_all)
-                .map(Result::ok)
-                .flatten()
+                .and_then(Result::ok)
                 .ok_or(Error::InvalidRdata)?;
             check_mx_address(zone, name, issues);
         }
