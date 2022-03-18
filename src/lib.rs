@@ -16,5 +16,6 @@ pub mod class;
 pub mod message;
 pub mod name;
 pub mod rr;
+pub mod server;
 mod util;
 pub mod zone;
