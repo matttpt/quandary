@@ -17,5 +17,6 @@ pub mod message;
 pub mod name;
 pub mod rr;
 pub mod server;
+pub mod thread;
 mod util;
 pub mod zone;

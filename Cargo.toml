@@ -11,6 +11,7 @@ lto = true
 [dependencies]
 arrayvec = "0.7"
 log = "0.4"
+slab = "0.4"
 
 [dev-dependencies]
 lazy_static = "1.4"
