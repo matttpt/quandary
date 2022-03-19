@@ -263,10 +263,7 @@ mod tests {
     fn lookup_handles_nxdomain() {
         let zone = Zone::new(boxed_name("quandary.test."), Class::IN, GluePolicy::Narrow);
         let www = boxed_name("www.quandary.test.");
-        match zone.lookup(&www, Type::A) {
-            LookupResult::NxDomain => (),
-            _ => panic!("expected an NXDOMAIN"),
-        }
+        assert!(matches!(zone.lookup(&www, Type::A), LookupResult::NxDomain));
     }
 
     #[test]
@@ -276,10 +273,10 @@ mod tests {
         let localhost = b"\x7f\x00\x00\x01".try_into().unwrap();
         zone.add(&www, Type::A, Class::IN, Ttl::from(3600), localhost)
             .unwrap();
-        match zone.lookup(&www, Type::AAAA) {
-            LookupResult::NoRecords => (),
-            _ => panic!("expected no error but no records"),
-        }
+        assert!(matches!(
+            zone.lookup(&www, Type::AAAA),
+            LookupResult::NoRecords
+        ));
     }
 
     #[test]
@@ -287,10 +284,10 @@ mod tests {
         // ... and if it does, its various wrappers should too!
         let zone = Zone::new(boxed_name("quandary.test."), Class::IN, GluePolicy::Narrow);
         let other: Box<Name> = "other.test.".parse().unwrap();
-        match zone.lookup_all_raw(&other, false) {
-            LookupAllResult::WrongZone => (),
-            _ => panic!("expected LookupAllResult::WrongZone"),
-        }
+        assert!(matches!(
+            zone.lookup_all_raw(&other, false),
+            LookupAllResult::WrongZone
+        ));
     }
 
     #[test]
@@ -378,10 +375,10 @@ mod tests {
             }
             _ => panic!("host3.example. MX did not return the expected record"),
         }
-        match zone.lookup(&boxed_name("host3.example."), Type::A) {
-            LookupResult::NoRecords => (),
-            _ => panic!("host3.example. A did not return the expected \"no records\""),
-        }
+        assert!(matches!(
+            zone.lookup(&boxed_name("host3.example."), Type::A),
+            LookupResult::NoRecords
+        ));
         match zone.lookup(&boxed_name("foo.bar.example."), Type::TXT) {
             LookupResult::Found(rrset) => {
                 check_rrset(rrset, Type::TXT, &[RFC_4592_WILDCARD_TXT]);
@@ -391,18 +388,18 @@ mod tests {
 
         // The following do not trigger wildcard synthesis. (See RFC
         // 4592 § 2.2.1 for the reasons why!)
-        match zone.lookup(&boxed_name("host1.example."), Type::MX) {
-            LookupResult::NoRecords => (),
-            _ => panic!("host1.example. MX did not return the expected \"no records\""),
-        }
-        match zone.lookup(&boxed_name("sub.*.example."), Type::MX) {
-            LookupResult::NoRecords => (),
-            _ => panic!("sub.*.example. MX did not return the expected \"no records\""),
-        }
-        match zone.lookup(&boxed_name("_telnet._tcp.host1.example."), Type::SRV) {
-            LookupResult::NxDomain => (),
-            _ => panic!("_telnet.tcp.host1.example. SRV did not return expected NXDOMAIN"),
-        }
+        assert!(matches!(
+            zone.lookup(&boxed_name("host1.example."), Type::MX),
+            LookupResult::NoRecords
+        ));
+        assert!(matches!(
+            zone.lookup(&boxed_name("sub.*.example."), Type::MX),
+            LookupResult::NoRecords
+        ));
+        assert!(matches!(
+            zone.lookup(&boxed_name("_telnet._tcp.host1.example."), Type::SRV),
+            LookupResult::NxDomain
+        ));
         match zone.lookup(&boxed_name("host.subdel.example."), Type::A) {
             LookupResult::Referral(child_zone, rrset) => {
                 assert_eq!(child_zone, boxed_name("subdel.example.").as_ref());
@@ -410,9 +407,9 @@ mod tests {
             }
             _ => panic!("host.subdel.example. A did not return the expected referral"),
         }
-        match zone.lookup(&boxed_name("ghost.*.example."), Type::MX) {
-            LookupResult::NxDomain => (),
-            _ => panic!("ghost.*.example. MX did not return the expected NXDOMAIN"),
-        }
+        assert!(matches!(
+            zone.lookup(&boxed_name("ghost.*.example."), Type::MX),
+            LookupResult::NxDomain
+        ));
     }
 }

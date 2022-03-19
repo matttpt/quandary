@@ -647,10 +647,7 @@ mod tests {
         let group = ThreadGroup::new();
         let pool = group.start_pool(None, 0).unwrap();
         pool.shut_down();
-        match pool.submit(|| ()) {
-            Err(Error::ShuttingDown) => (),
-            _ => panic!(),
-        }
+        assert!(matches!(pool.submit(|| ()), Err(Error::ShuttingDown)));
     }
 
     #[test]

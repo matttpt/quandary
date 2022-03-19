@@ -684,10 +684,10 @@ mod tests {
     fn writer_constructor_rejects_short_buffer() {
         for size in 0..HEADER_SIZE {
             let mut buf = vec![0; size];
-            match Writer::try_from(buf.as_mut_slice()) {
-                Err(Error::Truncation) => (),
-                _ => panic!("Writer::try_from did not fail with Error::Truncation"),
-            }
+            assert!(matches!(
+                Writer::try_from(buf.as_mut_slice()),
+                Err(Error::Truncation)
+            ));
         }
     }
 }
