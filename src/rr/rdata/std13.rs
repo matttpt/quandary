@@ -89,8 +89,34 @@ impl Borrow<[u8]> for CharacterString {
     }
 }
 
-/// An error signaling that a `&[u8]` cannot be converted to a
-/// `&CharacterString` because it is too long.
+impl ToOwned for CharacterString {
+    type Owned = Box<Self>;
+
+    fn to_owned(&self) -> Self::Owned {
+        let boxed_octets: Box<[u8]> = self.octets.into();
+        unsafe { Box::from_raw(Box::into_raw(boxed_octets) as *mut CharacterString) }
+    }
+}
+
+impl TryFrom<Vec<u8>> for Box<CharacterString> {
+    type Error = CharacterStringTooLongError;
+
+    fn try_from(vec: Vec<u8>) -> Result<Self, Self::Error> {
+        if vec.len() > (u8::MAX as usize) {
+            Err(CharacterStringTooLongError)
+        } else {
+            let boxed_octets: Box<[u8]> = vec.into_boxed_slice();
+            unsafe {
+                Ok(Box::from_raw(
+                    Box::into_raw(boxed_octets) as *mut CharacterString
+                ))
+            }
+        }
+    }
+}
+
+/// An error signaling that a buffer cannot be converted into a
+/// [`CharacterString`] because it is too long.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct CharacterStringTooLongError;
 
