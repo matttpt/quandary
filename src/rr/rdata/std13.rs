@@ -21,7 +21,6 @@
 use std::fmt;
 use std::iter;
 use std::net::Ipv4Addr;
-use std::ops::Deref;
 
 use super::helpers;
 use super::{Rdata, RdataTooLongError, ReadRdataError};
@@ -47,9 +46,19 @@ pub struct CharacterString {
 }
 
 impl CharacterString {
+    /// Returns the length of the `<character-string>`'s content.
+    pub fn len(&self) -> usize {
+        self.octets.len()
+    }
+
+    /// Returns whether the `<character-string>` is empty.
+    pub fn is_empty(&self) -> bool {
+        self.octets.is_empty()
+    }
+
     /// Returns the underlying octet slice.
     pub fn octets(&self) -> &[u8] {
-        self
+        &self.octets
     }
 }
 
@@ -70,14 +79,6 @@ impl<'a, const N: usize> TryFrom<&'a [u8; N]> for &'a CharacterString {
 
     fn try_from(octets: &'a [u8; N]) -> Result<Self, Self::Error> {
         octets[..].try_into()
-    }
-}
-
-impl Deref for CharacterString {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        &self.octets
     }
 }
 
@@ -224,9 +225,9 @@ pub(super) fn validate_wks(rdata: &Rdata) -> Result<(), ReadRdataError> {
 pub fn serialize_hinfo(cpu: &CharacterString, os: &CharacterString, buf: &mut Vec<u8>) {
     buf.reserve(2 + cpu.len() + os.len());
     buf.push(cpu.len() as u8);
-    buf.extend_from_slice(cpu);
+    buf.extend_from_slice(cpu.octets());
     buf.push(os.len() as u8);
-    buf.extend_from_slice(os);
+    buf.extend_from_slice(os.octets());
 }
 
 /// Checks whether `rdata` is a valid serialized HINFO record. This is
@@ -388,7 +389,7 @@ impl<'a> TxtBuilder<'a> {
         } else {
             self.buf.reserve(1 + character_string.len());
             self.buf.push(character_string.len() as u8);
-            self.buf.extend_from_slice(character_string);
+            self.buf.extend_from_slice(character_string.octets());
             self.octets_written += character_string.len() + 1;
             Ok(())
         }
