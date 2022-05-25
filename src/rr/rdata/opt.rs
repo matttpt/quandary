@@ -66,14 +66,16 @@ impl<'a> OptBuilder<'a> {
     }
 }
 
-/// Checks whether `rdata` is a valid serialized OPT record. This is for
-/// the implementation of [`Rdata::validate`] and [`Rdata::read`].
-pub(super) fn validate_opt(rdata: &Rdata) -> Result<(), ReadRdataError> {
-    let mut offset = 0;
-    while offset < rdata.len() {
-        offset += validate_option(&rdata[offset..])?
+impl Rdata {
+    /// Validates this [`Rdata`] for correctness, assuming that it is of
+    /// type OPT.
+    pub fn validate_as_opt(&self) -> Result<(), ReadRdataError> {
+        let mut offset = 0;
+        while offset < self.len() {
+            offset += validate_option(&self.octets[offset..])?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// Validates a single option in an OPT record's RDATA.

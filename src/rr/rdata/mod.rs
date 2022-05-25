@@ -62,8 +62,8 @@ impl Rdata {
         Self::from_unchecked(&[])
     }
 
-    /// Compares this [`Rdata`] to another, assuming that they are both
-    /// of type `rr_type`.
+    /// Determines whether this [`Rdata`] is equal to another, assuming
+    /// that they are both of type `rr_type`.
     ///
     /// [RFC 3597 § 6] specifies that RRs of unknown type are equal when
     /// their RDATA is bitwise equal, and that new RR types should not
@@ -86,28 +86,20 @@ impl Rdata {
     ///
     /// [RFC 3597 § 6]: https://datatracker.ietf.org/doc/html/rfc3597#section-6
     pub fn equals(&self, other: &Self, rr_type: Type) -> bool {
-        if self.octets().len() != other.octets().len() {
-            // Since equal embedded domain names are always the same
-            // length (even if they contain octets of differing ASCII
-            // case), the RDATAs can't be equal if they have differing
-            // lengths.
-            false
-        } else {
-            match rr_type {
-                Type::NS
-                | Type::MD
-                | Type::MF
-                | Type::CNAME
-                | Type::MB
-                | Type::MG
-                | Type::MR
-                | Type::PTR => helpers::names_equal(self, other),
-                Type::SOA => soas_equal(self, other),
-                Type::MINFO => minfos_equal(self, other),
-                Type::MX => mxs_equal(self, other),
-                Type::SRV => srvs_equal(self, other),
-                _ => self.octets() == other.octets(),
-            }
+        match rr_type {
+            Type::NS
+            | Type::MD
+            | Type::MF
+            | Type::CNAME
+            | Type::MB
+            | Type::MG
+            | Type::MR
+            | Type::PTR => helpers::names_equal(&self.octets, &other.octets),
+            Type::SOA => self.equals_as_soa(other),
+            Type::MINFO => self.equals_as_minfo(other),
+            Type::MX => self.equals_as_mx(other),
+            Type::SRV => self.equals_as_srv(other),
+            _ => self.octets == other.octets,
         }
     }
 
@@ -123,18 +115,18 @@ impl Rdata {
             | Type::MB
             | Type::MG
             | Type::MR
-            | Type::PTR => helpers::validate_name(self),
-            Type::A => validate_a(self),
-            Type::SOA => validate_soa(self),
+            | Type::PTR => helpers::validate_name(&self.octets),
+            Type::A => self.validate_as_a(),
+            Type::SOA => self.validate_as_soa(),
             // For NULL, there is nothing to do!
-            Type::WKS => validate_wks(self),
-            Type::HINFO => validate_hinfo(self),
-            Type::MINFO => validate_minfo(self),
-            Type::MX => validate_mx(self),
-            Type::TXT => validate_txt(self),
-            Type::AAAA => validate_aaaa(self),
-            Type::SRV => validate_srv(self),
-            Type::OPT => validate_opt(self),
+            Type::WKS => self.validate_as_wks(),
+            Type::HINFO => self.validate_as_hinfo(),
+            Type::MINFO => self.validate_as_minfo(),
+            Type::MX => self.validate_as_mx(),
+            Type::TXT => self.validate_as_txt(),
+            Type::AAAA => self.validate_as_aaaa(),
+            Type::SRV => self.validate_as_srv(),
+            Type::OPT => self.validate_as_opt(),
             _ => Ok(()),
         }
     }
@@ -176,20 +168,17 @@ impl Rdata {
         message: &[u8],
         cursor: usize,
         rdlength: u16,
-    ) -> Result<Cow<Rdata>, ReadRdataError> {
-        let end = cursor + rdlength as usize;
-        if end > message.len() {
-            return Err(ReadRdataError::UnexpectedEom);
-        }
-        let buf = &message[..end];
-        let rdata = (&buf[cursor..]).try_into().unwrap();
-        let with_decompression =
-            |reader: fn(&[u8], usize) -> Result<Box<Rdata>, ReadRdataError>| {
-                reader(buf, cursor).map(Cow::Owned)
-            };
-        let without_decompression = |validator: fn(&Rdata) -> Result<(), ReadRdataError>| {
-            validator(rdata).and(Ok(Cow::Borrowed(rdata)))
+    ) -> Result<Cow<Self>, ReadRdataError> {
+        type Reader = fn(&[u8], usize, u16) -> Result<Box<Rdata>, ReadRdataError>;
+        type Validator = fn(&Rdata) -> Result<(), ReadRdataError>;
+        let with_decompression = |reader: Reader| reader(message, cursor, rdlength).map(Cow::Owned);
+        let without_decompression = |validator: Validator| {
+            helpers::prepare_to_read_rdata(message, cursor, rdlength).and_then(|buf| {
+                let rdata = (&buf[cursor..]).try_into().unwrap();
+                validator(rdata).and(Ok(Cow::Borrowed(rdata)))
+            })
         };
+
         match rr_type {
             Type::NS
             | Type::MD
@@ -199,18 +188,18 @@ impl Rdata {
             | Type::MG
             | Type::MR
             | Type::PTR => with_decompression(helpers::read_name_rdata),
-            Type::A => without_decompression(validate_a),
-            Type::SOA => with_decompression(read_soa),
+            Type::A => without_decompression(Self::validate_as_a),
+            Type::SOA => with_decompression(Self::read_soa),
             // For NULL, there is no validation to do!
-            Type::WKS => without_decompression(validate_wks),
-            Type::HINFO => without_decompression(validate_hinfo),
-            Type::MINFO => with_decompression(read_minfo),
-            Type::MX => with_decompression(read_mx),
-            Type::TXT => without_decompression(validate_txt),
-            Type::AAAA => without_decompression(validate_aaaa),
-            Type::SRV => with_decompression(read_srv),
-            Type::OPT => without_decompression(validate_opt),
-            _ => Ok(Cow::Borrowed(rdata)),
+            Type::WKS => without_decompression(Self::validate_as_wks),
+            Type::HINFO => without_decompression(Self::validate_as_hinfo),
+            Type::MINFO => with_decompression(Self::read_minfo),
+            Type::MX => with_decompression(Self::read_mx),
+            Type::TXT => without_decompression(Self::validate_as_txt),
+            Type::AAAA => without_decompression(Self::validate_as_aaaa),
+            Type::SRV => with_decompression(Self::read_srv),
+            Type::OPT => without_decompression(Self::validate_as_opt),
+            _ => without_decompression(|_| Ok(())),
         }
     }
 

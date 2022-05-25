@@ -33,47 +33,53 @@ pub fn serialize_srv(priority: u16, weight: u16, port: u16, target: &Name, buf: 
     buf.extend_from_slice(target.wire_repr());
 }
 
-/// Checks whether `rdata` is a valid serialized SRV record. This is for
-/// the implementation of [`Rdata::validate`].
-pub(super) fn validate_srv(rdata: &Rdata) -> Result<(), ReadRdataError> {
-    if let Some(name_octets) = rdata.get(6..) {
-        Name::validate_uncompressed_all(name_octets).map_err(Into::into)
-    } else {
-        Err(ReadRdataError::Other)
-    }
-}
-
-/// Validates and decompresses an SRV record. This is for the
-/// implementation of [`Rdata::read`].
-pub(super) fn read_srv(buf: &[u8], cursor: usize) -> Result<Box<Rdata>, ReadRdataError> {
-    if buf.len() - cursor < 6 {
-        Err(ReadRdataError::Other)
-    } else {
-        let (exchange, len) = Name::try_from_compressed(buf, cursor + 6)?;
-        if buf.len() - cursor != len + 6 {
-            Err(ReadRdataError::Other)
+impl Rdata {
+    /// Validates this [`Rdata`] for correctness, assuming that it is of
+    /// type SRV.
+    pub fn validate_as_srv(&self) -> Result<(), ReadRdataError> {
+        if let Some(name_octets) = self.octets.get(6..) {
+            Name::validate_uncompressed_all(name_octets).map_err(Into::into)
         } else {
-            let mut rdata = Vec::with_capacity(6 + exchange.wire_repr().len());
-            rdata.extend_from_slice(&buf[cursor..cursor + 6]);
-            rdata.extend_from_slice(exchange.wire_repr());
-            Ok(rdata.try_into().unwrap())
+            Err(ReadRdataError::Other)
         }
     }
-}
 
-/// Tests two on-the-wire SRV records *with the same length* for
-/// equality. If either contains an invalid domain name, then this falls
-/// back to bitwise comparison. This is for the implementation of
-/// [`Rdata::equals`].
-pub(super) fn srvs_equal(first: &Rdata, second: &Rdata) -> bool {
-    assert!(first.len() == second.len());
-    if first.len() > 6 {
-        // Note that if names_equal falls back to bitwise comparison,
-        // then we did a bitwise comparison of the whole thing, so we
-        // still did what we said we would!
-        first[0..6] == second[0..6] && helpers::names_equal(&first[6..], &second[6..])
-    } else {
-        // Invalid records; do a bitwise comparison.
-        first == second
+    /// Reads SRV RDATA from a message. See [`Rdata::read`] for details.
+    pub fn read_srv(
+        message: &[u8],
+        cursor: usize,
+        rdlength: u16,
+    ) -> Result<Box<Self>, ReadRdataError> {
+        let buf = helpers::prepare_to_read_rdata(message, cursor, rdlength)?;
+        if buf.len() - cursor < 6 {
+            Err(ReadRdataError::Other)
+        } else {
+            let (exchange, len) = Name::try_from_compressed(buf, cursor + 6)?;
+            if buf.len() - cursor != len + 6 {
+                Err(ReadRdataError::Other)
+            } else {
+                let mut rdata = Vec::with_capacity(6 + exchange.wire_repr().len());
+                rdata.extend_from_slice(&buf[cursor..cursor + 6]);
+                rdata.extend_from_slice(exchange.wire_repr());
+                Ok(rdata.try_into().unwrap())
+            }
+        }
+    }
+
+    /// Determines whether this [`Rdata`] is equal to another, assuming
+    /// that both are of type SRV. See [`Rdata::equals`] for details.
+    pub fn equals_as_srv(&self, other: &Rdata) -> bool {
+        if self.len() != other.len() {
+            false
+        } else if self.len() > 6 {
+            // Note that if names_equal falls back to bitwise comparison,
+            // then we did a bitwise comparison of the whole thing, so we
+            // still did what we said we would!
+            self.octets[0..6] == other.octets[0..6]
+                && helpers::names_equal(&self.octets[6..], &other.octets[6..])
+        } else {
+            // Invalid records; do a bitwise comparison.
+            self.octets == other.octets
+        }
     }
 }

@@ -102,12 +102,33 @@ pub fn validate_name(name: &[u8]) -> Result<(), ReadRdataError> {
 }
 
 ////////////////////////////////////////////////////////////////////////
-// HELPER FOR Rdata::read                                             //
+// HELPERS FOR Rdata::read                                            //
 ////////////////////////////////////////////////////////////////////////
+
+/// Prepares to read RDATA by checking that the message buffer is long
+/// enough for the RDLENGTH. On success, a new slice that ends at the
+/// end of the RDATA is returned.
+pub fn prepare_to_read_rdata(
+    message: &[u8],
+    cursor: usize,
+    rdlength: u16,
+) -> Result<&[u8], ReadRdataError> {
+    let end = cursor + rdlength as usize;
+    if end > message.len() {
+        Err(ReadRdataError::UnexpectedEom)
+    } else {
+        Ok(&message[..end])
+    }
+}
 
 /// Validates and decompresses RDATA consisting of a single domain name.
 /// This is for the implementation of [`Rdata::read`].
-pub fn read_name_rdata(buf: &[u8], cursor: usize) -> Result<Box<Rdata>, ReadRdataError> {
+pub fn read_name_rdata(
+    message: &[u8],
+    cursor: usize,
+    rdlength: u16,
+) -> Result<Box<Rdata>, ReadRdataError> {
+    let buf = prepare_to_read_rdata(message, cursor, rdlength)?;
     let (name, len) = Name::try_from_compressed(buf, cursor)?;
     if buf.len() - cursor != len {
         Err(ReadRdataError::Other)

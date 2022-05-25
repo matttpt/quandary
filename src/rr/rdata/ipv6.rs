@@ -29,12 +29,14 @@ pub fn serialize_aaaa(address: Ipv6Addr, buf: &mut Vec<u8>) {
     buf.extend_from_slice(&address.octets());
 }
 
-/// Checks whether `rdata` is a valid serialized AAAA record. This is
-/// for the implementation of [`Rdata::validate`] and [`Rdata::read`].
-pub(super) fn validate_aaaa(rdata: &Rdata) -> Result<(), ReadRdataError> {
-    if rdata.len() == 16 {
-        Ok(())
-    } else {
-        Err(ReadRdataError::Other)
+impl Rdata {
+    /// Validates this [`Rdata`] for correctness, assuming that it is of
+    /// type AAAA.
+    pub fn validate_as_aaaa(&self) -> Result<(), ReadRdataError> {
+        if self.len() == 16 {
+            Ok(())
+        } else {
+            Err(ReadRdataError::Other)
+        }
     }
 }

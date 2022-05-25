@@ -28,7 +28,7 @@ use super::{Rdata, RdataTooLongError, ReadRdataError};
 use crate::name::Name;
 
 ////////////////////////////////////////////////////////////////////////
-// STD 13 (RFC 1035 § 3.3) <CHARACTER-STRING> TYPE                    //
+// RFC 1035 § 3.3 <CHARACTER-STRING> TYPE                             //
 ////////////////////////////////////////////////////////////////////////
 
 /// A type for [RFC 1035 § 3.3] `<character-string>`s.
@@ -145,7 +145,28 @@ fn validate_character_string(octets: &[u8]) -> Result<usize, ReadRdataError> {
 }
 
 ////////////////////////////////////////////////////////////////////////
-// STD 13 (RFC 1035 § 3.3) - STANDARD RRS                             //
+// RFC 1035 § 3.4.1 - A RDATA                                         //
+////////////////////////////////////////////////////////////////////////
+
+/// Serializes an A record into the provided buffer.
+pub fn serialize_a(address: Ipv4Addr, buf: &mut Vec<u8>) {
+    buf.extend_from_slice(&address.octets())
+}
+
+impl Rdata {
+    /// Validates this [`Rdata`] for correctness, assuming that it is of
+    /// type A.
+    pub fn validate_as_a(&self) -> Result<(), ReadRdataError> {
+        if self.len() == 4 {
+            Ok(())
+        } else {
+            Err(ReadRdataError::Other)
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////
+// RFC 1035 § 3.3.13 - SOA RDATA                                      //
 ////////////////////////////////////////////////////////////////////////
 
 /// Serializes an SOA record into the provided buffer.
@@ -177,54 +198,66 @@ pub fn serialize_soa(
     buf.extend_from_slice(&minimum.to_be_bytes());
 }
 
-/// Checks whether `rdata` is a valid serialized SOA record. This is for
-/// the implementation of [`Rdata::validate`].
-pub(super) fn validate_soa(rdata: &Rdata) -> Result<(), ReadRdataError> {
-    let mname_len = Name::validate_uncompressed(rdata)?;
-    let rname_len = Name::validate_uncompressed(&rdata[mname_len..])?;
-    if rdata.len() == 20 + mname_len + rname_len {
-        Ok(())
-    } else {
-        Err(ReadRdataError::Other)
-    }
-}
-
-/// Validates and decompresses an SOA record. This is for the
-/// implementation of [`Rdata::read`].
-pub(super) fn read_soa(buf: &[u8], cursor: usize) -> Result<Box<Rdata>, ReadRdataError> {
-    let (mname, mlen) = Name::try_from_compressed(buf, cursor)?;
-    let (rname, rlen) = Name::try_from_compressed(buf, cursor + mlen)?;
-    if buf.len() - cursor - mlen - rlen != 20 {
-        Err(ReadRdataError::Other)
-    } else {
-        let mut rdata = Vec::with_capacity(mname.wire_repr().len() + rname.wire_repr().len() + 20);
-        rdata.extend_from_slice(mname.wire_repr());
-        rdata.extend_from_slice(rname.wire_repr());
-        rdata.extend_from_slice(&buf[cursor + mlen + rlen..]);
-        Ok(rdata.try_into().unwrap())
-    }
-}
-
-/// Tests two on-the-wire SOA records *with the same length* for
-/// equality, falling back to bitwise comparison if either is invalid.
-/// This is for the implementation of [`Rdata::equals`].
-pub(super) fn soas_equal(first: &Rdata, second: &Rdata) -> bool {
-    assert!(first.len() == second.len());
-    match helpers::test_n_name_fields(first, second, 2) {
-        Some(Some(len)) => {
-            if first.len() - len != 20 {
-                // The remaining fields are not the right length.
-                // Fall back to bitwise comparison.
-                first == second
-            } else {
-                // Compare the remaining fields bitwise.
-                first[len..] == second[len..]
-            }
+impl Rdata {
+    /// Validates this [`Rdata`] for correctness, assuming that it is of
+    /// type SOA.
+    pub fn validate_as_soa(&self) -> Result<(), ReadRdataError> {
+        let mname_len = Name::validate_uncompressed(&self.octets)?;
+        let rname_len = Name::validate_uncompressed(&self.octets[mname_len..])?;
+        if self.len() == 20 + mname_len + rname_len {
+            Ok(())
+        } else {
+            Err(ReadRdataError::Other)
         }
-        Some(None) => false,
-        None => first == second,
+    }
+
+    /// Reads SOA RDATA from a message. See [`Rdata::read`] for details.
+    pub fn read_soa(
+        message: &[u8],
+        cursor: usize,
+        rdlength: u16,
+    ) -> Result<Box<Rdata>, ReadRdataError> {
+        let buf = helpers::prepare_to_read_rdata(message, cursor, rdlength)?;
+        let (mname, mlen) = Name::try_from_compressed(buf, cursor)?;
+        let (rname, rlen) = Name::try_from_compressed(buf, cursor + mlen)?;
+        if buf.len() - cursor - mlen - rlen != 20 {
+            Err(ReadRdataError::Other)
+        } else {
+            let mut rdata =
+                Vec::with_capacity(mname.wire_repr().len() + rname.wire_repr().len() + 20);
+            rdata.extend_from_slice(mname.wire_repr());
+            rdata.extend_from_slice(rname.wire_repr());
+            rdata.extend_from_slice(&buf[cursor + mlen + rlen..]);
+            Ok(rdata.try_into().unwrap())
+        }
+    }
+
+    /// Determines whether this [`Rdata`] is equal to another, assuming
+    /// that both are of type SOA. See [`Rdata::equals`] for details.
+    pub fn equals_as_soa(&self, other: &Rdata) -> bool {
+        if self.len() != other.len() {
+            return false;
+        }
+        match helpers::test_n_name_fields(&self.octets, &other.octets, 2) {
+            Some(Some(len)) => {
+                if self.len() - len != 20 {
+                    // The remaining fields are not the right length.
+                    // Fall back to bitwise comparison.
+                    self.octets == other.octets
+                } else {
+                    // Compare the remaining fields bitwise.
+                    self.octets[len..] == other.octets[len..]
+                }
+            }
+            Some(None) => false,
+            None => self.octets == other.octets,
+        }
     }
 }
+
+////////////////////////////////////////////////////////////////////////
+// RFC 1035 § 3.4.2 - WKS RDATA                                       //
+////////////////////////////////////////////////////////////////////////
 
 /// Serializes a WKS record into the provided buffer.
 pub fn serialize_wks(address: Ipv4Addr, protocol: u8, ports: &[u16], buf: &mut Vec<u8>) {
@@ -244,15 +277,21 @@ pub fn serialize_wks(address: Ipv4Addr, protocol: u8, ports: &[u16], buf: &mut V
     }
 }
 
-/// Checks whether `rdata` is a valid serialized WKS record. This is for
-/// the implementation of [`Rdata::validate`] and [`Rdata::read`].
-pub(super) fn validate_wks(rdata: &Rdata) -> Result<(), ReadRdataError> {
-    if rdata.len() >= 5 {
-        Ok(())
-    } else {
-        Err(ReadRdataError::Other)
+impl Rdata {
+    /// Validates this [`Rdata`] for correctness, assuming that it is of
+    /// type WKS.
+    pub fn validate_as_wks(&self) -> Result<(), ReadRdataError> {
+        if self.len() >= 5 {
+            Ok(())
+        } else {
+            Err(ReadRdataError::Other)
+        }
     }
 }
+
+////////////////////////////////////////////////////////////////////////
+// RFC 1035 § 3.3.2 - HINFO RDATA                                     //
+////////////////////////////////////////////////////////////////////////
 
 /// Serializes an HINFO record into the provided buffer.
 pub fn serialize_hinfo(cpu: &CharacterString, os: &CharacterString, buf: &mut Vec<u8>) {
@@ -263,17 +302,23 @@ pub fn serialize_hinfo(cpu: &CharacterString, os: &CharacterString, buf: &mut Ve
     buf.extend_from_slice(os.octets());
 }
 
-/// Checks whether `rdata` is a valid serialized HINFO record. This is
-/// for the implementation of [`Rdata::validate`] and [`Rdata::read`].
-pub(super) fn validate_hinfo(rdata: &Rdata) -> Result<(), ReadRdataError> {
-    let cpu_len = validate_character_string(rdata)?;
-    let os_len = validate_character_string(&rdata[cpu_len..])?;
-    if rdata.len() == cpu_len + os_len {
-        Ok(())
-    } else {
-        Err(ReadRdataError::Other)
+impl Rdata {
+    /// Validates this [`Rdata`] for correctness, assuming that it is of
+    /// type HINFO.
+    pub fn validate_as_hinfo(&self) -> Result<(), ReadRdataError> {
+        let cpu_len = validate_character_string(&self.octets)?;
+        let os_len = validate_character_string(&self.octets[cpu_len..])?;
+        if self.len() == cpu_len + os_len {
+            Ok(())
+        } else {
+            Err(ReadRdataError::Other)
+        }
     }
 }
+
+////////////////////////////////////////////////////////////////////////
+// RFC 1035 § 3.3.7 - MINFO RDATA                                     //
+////////////////////////////////////////////////////////////////////////
 
 /// Serializes an MINFO record into the provided buffer.
 pub fn serialize_minfo(rmailbx: &Name, emailbx: &Name, buf: &mut Vec<u8>) {
@@ -282,39 +327,53 @@ pub fn serialize_minfo(rmailbx: &Name, emailbx: &Name, buf: &mut Vec<u8>) {
     buf.extend_from_slice(emailbx.wire_repr());
 }
 
-/// Checks whether `rdata` is a valid serialized MINFO record. This is
-/// for the implementation of [`Rdata::validate`].
-pub(super) fn validate_minfo(rdata: &Rdata) -> Result<(), ReadRdataError> {
-    let rmailbx_len = Name::validate_uncompressed(rdata)?;
-    Name::validate_uncompressed_all(&rdata[rmailbx_len..]).map_err(Into::into)
-}
+impl Rdata {
+    /// Validates this [`Rdata`] for correctness, assuming that it is of
+    /// type MINFO.
+    pub fn validate_as_minfo(&self) -> Result<(), ReadRdataError> {
+        let rmailbx_len = Name::validate_uncompressed(&self.octets)?;
+        Name::validate_uncompressed_all(&self.octets[rmailbx_len..]).map_err(Into::into)
+    }
 
-/// Validates and decompresses an MINFO record. This is for the
-/// implementation of [`Rdata::read`].
-pub(super) fn read_minfo(buf: &[u8], cursor: usize) -> Result<Box<Rdata>, ReadRdataError> {
-    let (rmailbx, rlen) = Name::try_from_compressed(buf, cursor)?;
-    let (emailbx, elen) = Name::try_from_compressed(buf, cursor + rlen)?;
-    if buf.len() - cursor != rlen + elen {
-        Err(ReadRdataError::Other)
-    } else {
-        let mut rdata = Vec::with_capacity(rmailbx.wire_repr().len() + emailbx.wire_repr().len());
-        rdata.extend_from_slice(rmailbx.wire_repr());
-        rdata.extend_from_slice(emailbx.wire_repr());
-        Ok(rdata.try_into().unwrap())
+    /// Reads MINFO RDATA from a message. See [`Rdata::read`] for
+    /// details.
+    pub fn read_minfo(
+        message: &[u8],
+        cursor: usize,
+        rdlength: u16,
+    ) -> Result<Box<Rdata>, ReadRdataError> {
+        let buf = helpers::prepare_to_read_rdata(message, cursor, rdlength)?;
+        let (rmailbx, rlen) = Name::try_from_compressed(buf, cursor)?;
+        let (emailbx, elen) = Name::try_from_compressed(buf, cursor + rlen)?;
+        if buf.len() - cursor != rlen + elen {
+            Err(ReadRdataError::Other)
+        } else {
+            let mut rdata =
+                Vec::with_capacity(rmailbx.wire_repr().len() + emailbx.wire_repr().len());
+            rdata.extend_from_slice(rmailbx.wire_repr());
+            rdata.extend_from_slice(emailbx.wire_repr());
+            Ok(rdata.try_into().unwrap())
+        }
+    }
+
+    /// Determines whether this [`Rdata`] is equal to another, assuming
+    /// that both are of type MINFO. See [`Rdata::equals`] for details.
+    pub fn equals_as_minfo(&self, other: &Rdata) -> bool {
+        if self.len() != other.len() {
+            return false;
+        }
+        match helpers::test_n_name_fields(&self.octets, &other.octets, 2) {
+            Some(Some(len)) if len == self.len() => true,
+            Some(Some(_)) => self.octets == other.octets, // Invalid since there's extra data
+            Some(None) => false,
+            None => self.octets == other.octets,
+        }
     }
 }
 
-/// Tests two on-the-wire MINFO records for equality, falling back to
-/// bitwise comparison if either is invalid. This is for the
-/// implementation of [`Rdata::equals`].
-pub(super) fn minfos_equal(first: &Rdata, second: &Rdata) -> bool {
-    match helpers::test_n_name_fields(first, second, 2) {
-        Some(Some(len)) if len == first.len() => true,
-        Some(Some(_)) => first == second, // Invalid since there's extra data
-        Some(None) => false,
-        None => first == second,
-    }
-}
+////////////////////////////////////////////////////////////////////////
+// RFC 1035 § 3.3.9 - MX RDATA                                        //
+////////////////////////////////////////////////////////////////////////
 
 /// Serializes an MX record into the provided buffer.
 pub fn serialize_mx(preference: u16, name: &Name, buf: &mut Vec<u8>) {
@@ -323,50 +382,60 @@ pub fn serialize_mx(preference: u16, name: &Name, buf: &mut Vec<u8>) {
     buf.extend_from_slice(name.wire_repr());
 }
 
-/// Checks whether `rdata` is a valid serialized MX record. This is for
-/// the implementation of [`Rdata::validate`].
-pub(super) fn validate_mx(rdata: &Rdata) -> Result<(), ReadRdataError> {
-    if let Some(exchange_octets) = rdata.get(2..) {
-        Name::validate_uncompressed_all(exchange_octets).map_err(Into::into)
-    } else {
-        Err(ReadRdataError::Other)
+impl Rdata {
+    /// Validates this [`Rdata`] for correctness, assuming that it is of
+    /// type MX.
+    pub fn validate_as_mx(&self) -> Result<(), ReadRdataError> {
+        if let Some(exchange_octets) = self.octets.get(2..) {
+            Name::validate_uncompressed_all(exchange_octets).map_err(Into::into)
+        } else {
+            Err(ReadRdataError::Other)
+        }
     }
-}
 
-/// Validates and decompresses an MX record. This is for the
-/// implementation of [`Rdata::read`].
-pub(super) fn read_mx(buf: &[u8], cursor: usize) -> Result<Box<Rdata>, ReadRdataError> {
-    if buf.len() - cursor < 2 {
-        Err(ReadRdataError::Other)
-    } else {
-        let (exchange, len) = Name::try_from_compressed(buf, cursor + 2)?;
-        if buf.len() - cursor != len + 2 {
+    /// Reads MX RDATA from a message. See [`Rdata::read`] for details.
+    pub fn read_mx(
+        message: &[u8],
+        cursor: usize,
+        rdlength: u16,
+    ) -> Result<Box<Rdata>, ReadRdataError> {
+        let buf = helpers::prepare_to_read_rdata(message, cursor, rdlength)?;
+        if buf.len() - cursor < 2 {
             Err(ReadRdataError::Other)
         } else {
-            let mut rdata = Vec::with_capacity(2 + exchange.wire_repr().len());
-            rdata.extend_from_slice(&buf[cursor..cursor + 2]);
-            rdata.extend_from_slice(exchange.wire_repr());
-            Ok(rdata.try_into().unwrap())
+            let (exchange, len) = Name::try_from_compressed(buf, cursor + 2)?;
+            if buf.len() - cursor != len + 2 {
+                Err(ReadRdataError::Other)
+            } else {
+                let mut rdata = Vec::with_capacity(2 + exchange.wire_repr().len());
+                rdata.extend_from_slice(&buf[cursor..cursor + 2]);
+                rdata.extend_from_slice(exchange.wire_repr());
+                Ok(rdata.try_into().unwrap())
+            }
+        }
+    }
+
+    /// Determines whether this [`Rdata`] is equal to another, assuming
+    /// that both are of type MX. See [`Rdata::equals`] for details.
+    pub fn equals_as_mx(&self, other: &Rdata) -> bool {
+        if self.len() != other.len() {
+            false
+        } else if self.len() > 2 {
+            // Note that if names_equal falls back to bitwise comparison,
+            // then we did a bitwise comparison of the whole thing, so we
+            // still did what we said we would!
+            self.octets[0..2] == other.octets[0..2]
+                && helpers::names_equal(&self.octets[2..], &other.octets[2..])
+        } else {
+            // Invalid records; do a bitwise comparison.
+            self.octets == other.octets
         }
     }
 }
 
-/// Tests two on-the-wire MX records *with the same length* for
-/// equality. If either contains an invalid domain name, this falls back
-/// to bitwise comparison. This is for the implementation of
-/// [`Rdata::equals`].
-pub(super) fn mxs_equal(first: &Rdata, second: &Rdata) -> bool {
-    assert!(first.len() == second.len());
-    if first.len() > 2 {
-        // Note that if names_equal falls back to bitwise comparison,
-        // then we did a bitwise comparison of the whole thing, so we
-        // still did what we said we would!
-        first[0..2] == second[0..2] && helpers::names_equal(&first[2..], &second[2..])
-    } else {
-        // Invalid records; do a bitwise comparison.
-        first == second
-    }
-}
+////////////////////////////////////////////////////////////////////////
+// RFC 1035 § 3.3.14 - TXT RDATA                                      //
+////////////////////////////////////////////////////////////////////////
 
 /// A helper to serialize DNS TXT records.
 ///
@@ -429,40 +498,23 @@ impl<'a> TxtBuilder<'a> {
     }
 }
 
-/// Checks whether `rdata` is a valid serialized TXT record. This is for
-/// the implementation of [`Rdata::validate`] and [`Rdata::read`].
-pub(super) fn validate_txt(rdata: &Rdata) -> Result<(), ReadRdataError> {
-    if rdata.is_empty() {
-        // Per RFC 1035 § 3.3.14, a TXT record must have at least one
-        // <character-string>.
-        return Err(ReadRdataError::Other);
-    }
+impl Rdata {
+    /// Validates this [`Rdata`] for correctness, assuming that it is of
+    /// type TXT.
+    pub fn validate_as_txt(&self) -> Result<(), ReadRdataError> {
+        if self.is_empty() {
+            // Per RFC 1035 § 3.3.14, a TXT record must have at least one
+            // <character-string>.
+            return Err(ReadRdataError::Other);
+        }
 
-    // NOTE: since validate_character_string() will not return a zero
-    // length, this loop will eventually end.
-    let mut offset = 0;
-    while offset < rdata.len() {
-        offset += validate_character_string(&rdata[offset..])?;
-    }
-    Ok(())
-}
-
-////////////////////////////////////////////////////////////////////////
-// STD 13 (RFC 1035 § 3.4) - INTERNET-SPECIFIC RRS                    //
-////////////////////////////////////////////////////////////////////////
-
-/// Serializes an A record into the provided buffer.
-pub fn serialize_a(address: Ipv4Addr, buf: &mut Vec<u8>) {
-    buf.extend_from_slice(&address.octets())
-}
-
-/// Checks whether `rdata` is a valid serialized A record. This is for
-/// the implementation of [`Rdata::validate`] and [`Rdata::read`].
-pub(super) fn validate_a(rdata: &Rdata) -> Result<(), ReadRdataError> {
-    if rdata.len() == 4 {
+        // NOTE: since validate_character_string() will not return a zero
+        // length, this loop will eventually end.
+        let mut offset = 0;
+        while offset < self.len() {
+            offset += validate_character_string(&self.octets[offset..])?;
+        }
         Ok(())
-    } else {
-        Err(ReadRdataError::Other)
     }
 }
 
