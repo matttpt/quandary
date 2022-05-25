@@ -239,7 +239,7 @@ mod tests {
         for &expected_rdata in expected_rdatas {
             assert_eq!(rdatas.next().unwrap().octets(), expected_rdata);
         }
-        assert_eq!(rdatas.next(), None);
+        assert!(rdatas.next().is_none());
     }
 
     ////////////////////////////////////////////////////////////////////

@@ -43,7 +43,6 @@ pub use std13::*;
 /// The RDATA of a record is limited to 65,535 octets. The `Rdata` type
 /// is a wrapper over `[u8]` that can only be constructed if the
 /// underlying data has a valid length.
-#[derive(Eq, PartialEq)]
 #[repr(transparent)]
 pub struct Rdata {
     octets: [u8],
@@ -353,15 +352,18 @@ mod tests {
     #[test]
     fn rdata_constructor_rejects_long_slice() {
         let too_long = [0; u16::MAX as usize + 1];
-        assert_eq!(<&Rdata>::try_from(&too_long[..]), Err(RdataTooLongError));
+        assert!(matches!(
+            <&Rdata>::try_from(&too_long[..]),
+            Err(RdataTooLongError),
+        ));
     }
 
     #[test]
     fn read_checks_if_message_is_long_enough() {
         let too_short = [0; 4];
-        assert_eq!(
+        assert!(matches!(
             Rdata::read(Type::A, &too_short[..], 2, 4),
-            Err(ReadRdataError::UnexpectedEom)
-        );
+            Err(ReadRdataError::UnexpectedEom),
+        ));
     }
 }

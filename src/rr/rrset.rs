@@ -257,7 +257,10 @@ mod tests {
         assert_eq!(rrset.rr_type, Type::A);
         assert_eq!(rrset.class, Class::IN);
         assert_eq!(u32::from(rrset.ttl), 3600);
-        assert_eq!(rrset.rdatas().collect::<Vec<_>>(), [loopback1, loopback2]);
+        assert_eq!(
+            rrset.rdatas().map(Rdata::octets).collect::<Vec<_>>(),
+            [loopback1.octets(), loopback2.octets()],
+        );
     }
 
     #[test]
@@ -274,14 +277,20 @@ mod tests {
         // For e.g. A records, bitwise comparison should always be used.
         let mut a_rrset = Rrset::new(Type::A, Class::IN, Ttl::from(3600));
         push_rdatas(&mut a_rrset);
-        assert_eq!(a_rrset.rdatas().collect::<Vec<_>>(), [rdata1, rdata2]);
+        assert_eq!(
+            a_rrset.rdatas().map(Rdata::octets).collect::<Vec<_>>(),
+            [rdata1.octets(), rdata2.octets()],
+        );
 
         // But for RR types embedding domain names *preceding* RFC 3597,
         // case-insensitive name comparison needs to be used. (See the
         // cmp module for details.)
         let mut cname_rrset = Rrset::new(Type::CNAME, Class::IN, Ttl::from(3600));
         push_rdatas(&mut cname_rrset);
-        assert_eq!(cname_rrset.rdatas().collect::<Vec<_>>(), [rdata1]);
+        assert_eq!(
+            cname_rrset.rdatas().map(Rdata::octets).collect::<Vec<_>>(),
+            [rdata1.octets()],
+        );
     }
 
     #[test]
@@ -301,9 +310,15 @@ mod tests {
             .unwrap();
 
         let a_rrset = rrsets.lookup(Type::A).unwrap();
-        assert_eq!(a_rrset.rdatas().collect::<Vec<_>>(), [loopback1, loopback2]);
+        assert_eq!(
+            a_rrset.rdatas().map(Rdata::octets).collect::<Vec<_>>(),
+            [loopback1.octets(), loopback2.octets()],
+        );
         let cname_rrset = rrsets.lookup(Type::CNAME).unwrap();
-        assert_eq!(cname_rrset.rdatas().collect::<Vec<_>>(), [domain]);
+        assert_eq!(
+            cname_rrset.rdatas().map(Rdata::octets).collect::<Vec<_>>(),
+            [domain.octets()],
+        );
         assert!(rrsets.lookup(Type::AAAA).is_none());
     }
 

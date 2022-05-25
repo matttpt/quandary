@@ -232,7 +232,7 @@ fn read_u32(octets: &[u8]) -> Result<u32> {
 /// RRsets. Also, by doing so, this type can have the exact right
 /// combination of owned versus borrowed members for
 /// [`Reader::read_rr`].
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct ReadRr<'a> {
     pub owner: Box<Name>,
     pub rr_type: Type,
