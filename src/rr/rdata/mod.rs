@@ -14,7 +14,7 @@
 
 //! Implementation of the [`Rdata`] type and DNS RDATA processing.
 
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::fmt::{self, Write};
 
 use super::Type;
@@ -235,6 +235,12 @@ impl<'a, const N: usize> TryFrom<&'a [u8; N]> for &'a Rdata {
 
     fn try_from(octets: &'a [u8; N]) -> Result<Self, Self::Error> {
         octets[..].try_into()
+    }
+}
+
+impl Borrow<[u8]> for Rdata {
+    fn borrow(&self) -> &[u8] {
+        &self.octets
     }
 }
 
