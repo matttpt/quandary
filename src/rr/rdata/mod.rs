@@ -16,7 +16,6 @@
 
 use std::borrow::Cow;
 use std::fmt::{self, Write};
-use std::ops::Deref;
 
 use super::Type;
 use crate::name;
@@ -203,9 +202,19 @@ impl Rdata {
         }
     }
 
+    /// Returns whether the [`Rdata`] is empty.
+    pub fn is_empty(&self) -> bool {
+        self.octets.is_empty()
+    }
+
+    /// Returns the length of the [`Rdata`].
+    pub fn len(&self) -> usize {
+        self.octets.len()
+    }
+
     /// Returns the underlying octet slice.
     pub fn octets(&self) -> &[u8] {
-        self
+        &self.octets
     }
 }
 
@@ -226,14 +235,6 @@ impl<'a, const N: usize> TryFrom<&'a [u8; N]> for &'a Rdata {
 
     fn try_from(octets: &'a [u8; N]) -> Result<Self, Self::Error> {
         octets[..].try_into()
-    }
-}
-
-impl Deref for Rdata {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        &self.octets
     }
 }
 
@@ -266,7 +267,7 @@ impl fmt::Display for Rdata {
         write!(f, "\\# {}", self.len())?;
         if !self.is_empty() {
             f.write_char(' ')?;
-            for octet in self.iter() {
+            for octet in self.octets.iter() {
                 f.write_char(char::from(nibble_to_ascii_hex_digit((octet & 0xf0) >> 4)))?;
                 f.write_char(char::from(nibble_to_ascii_hex_digit(octet & 0xf)))?;
             }

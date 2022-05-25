@@ -268,7 +268,7 @@ fn follow_cname_1(
     if let Some(cname) = cname_rrset
         .rdatas()
         .next()
-        .map(|rdata| Name::try_from_uncompressed_all(rdata))
+        .map(|rdata| Name::try_from_uncompressed_all(rdata.octets()))
         .and_then(Result::ok)
     {
         if cname.as_ref() == qname || owners_seen.contains(&cname) {
@@ -516,10 +516,12 @@ fn add_negative_caching_soa(zone: &Zone, response: &mut Writer) -> ProcessingRes
 
 /// Reads the MINIMUM field from the provided SOA RDATA.
 fn read_soa_minimum(rdata: &Rdata) -> ProcessingResult<u32> {
-    let mname_len = Name::validate_uncompressed(rdata).or(Err(ProcessingError::ServFail))?;
-    let rname_len =
-        Name::validate_uncompressed(&rdata[mname_len..]).or(Err(ProcessingError::ServFail))?;
+    let mname_len =
+        Name::validate_uncompressed(rdata.octets()).or(Err(ProcessingError::ServFail))?;
+    let rname_len = Name::validate_uncompressed(&rdata.octets()[mname_len..])
+        .or(Err(ProcessingError::ServFail))?;
     let octets = rdata
+        .octets()
         .get(mname_len + rname_len + 16..)
         .ok_or(ProcessingError::ServFail)?;
     let array: [u8; 4] = octets.try_into().or(Err(ProcessingError::ServFail))?;
@@ -560,6 +562,7 @@ fn execute_allowing_truncation(f: impl FnOnce() -> writer::Result<()>) -> writer
 /// running to the end of `rdata`.
 fn read_name_from_rdata(rdata: &Rdata, start: usize) -> ProcessingResult<Box<Name>> {
     rdata
+        .octets()
         .get(start..)
         .map(Name::try_from_uncompressed_all)
         .and_then(Result::ok)

@@ -320,7 +320,7 @@ impl Writer<'_> {
         self.try_push_u16(class.into())?;
         self.try_push_u32(ttl.into())?;
         self.try_push_u16(rdata.len() as u16)?;
-        self.try_push(rdata)
+        self.try_push(rdata.octets())
     }
 
     /// Writes out an RRset at the current cursor. This is for internal

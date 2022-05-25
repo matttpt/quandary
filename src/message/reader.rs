@@ -331,13 +331,13 @@ mod tests {
         assert_eq!(answer_1.rr_type, Type::NS);
         assert_eq!(answer_1.class, Class::IN);
         assert_eq!(answer_1.ttl, Ttl::from(86178));
-        assert_eq!(&**answer_1.rdata, expected_ns_a.wire_repr());
+        assert_eq!(answer_1.rdata.octets(), expected_ns_a.wire_repr());
         let answer_2 = reader.read_rr().unwrap();
         assert_eq!(answer_2.owner, expected_qname);
         assert_eq!(answer_2.rr_type, Type::NS);
         assert_eq!(answer_2.class, Class::IN);
         assert_eq!(answer_2.ttl, Ttl::from(86178));
-        assert_eq!(&**answer_2.rdata, expected_ns_b.wire_repr());
+        assert_eq!(answer_2.rdata.octets(), expected_ns_b.wire_repr());
 
         // Check the OPT record.
         let opt = reader.read_rr().unwrap();

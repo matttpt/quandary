@@ -71,7 +71,7 @@ impl Rrset {
         self.rdatas.reserve(2 + rdata.len());
         self.rdatas
             .extend_from_slice(&(rdata.len() as u16).to_ne_bytes());
-        self.rdatas.extend_from_slice(rdata);
+        self.rdatas.extend_from_slice(rdata.octets());
     }
 
     /// Returns an iterator over the [`Rdata`] of this `Rrset`.

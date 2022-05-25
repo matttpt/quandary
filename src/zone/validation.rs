@@ -153,7 +153,8 @@ impl Zone {
             for rdata in ns_rrset.rdatas() {
                 // Part of check 8: nameservers for the zone must have
                 // address records if they are within the zone.
-                let name = Name::try_from_uncompressed_all(rdata).or(Err(Error::InvalidRdata))?;
+                let name =
+                    Name::try_from_uncompressed_all(rdata.octets()).or(Err(Error::InvalidRdata))?;
                 check_apex_ns_address(self, name, &mut issues);
             }
         } else {
@@ -197,6 +198,7 @@ fn scan_node<'a>(
     if let Some(mx_rrset) = node.rrsets.lookup(Type::MX) {
         for rdata in mx_rrset.rdatas() {
             let name = rdata
+                .octets()
                 .get(2..)
                 .map(Name::try_from_uncompressed_all)
                 .and_then(Result::ok)
@@ -214,7 +216,7 @@ fn scan_node<'a>(
             at_delegation_point = false;
             for rdata in ns_rrset.rdatas() {
                 let nsdname =
-                    Name::try_from_uncompressed_all(rdata).or(Err(Error::InvalidRdata))?;
+                    Name::try_from_uncompressed_all(rdata.octets()).or(Err(Error::InvalidRdata))?;
                 check_delegation_ns_address(zone, nsdname, &node.name, issues);
             }
         } else {

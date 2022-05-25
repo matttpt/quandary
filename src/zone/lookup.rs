@@ -254,7 +254,7 @@ mod tests {
         zone.add(&www, Type::A, Class::IN, Ttl::from(3600), localhost)
             .unwrap();
         match zone.lookup(&www, Type::A) {
-            LookupResult::Found(rrset) => check_rrset(rrset, Type::A, &[localhost]),
+            LookupResult::Found(rrset) => check_rrset(rrset, Type::A, &[localhost.octets()]),
             _ => panic!("expected an A record"),
         }
     }
@@ -308,7 +308,7 @@ mod tests {
             match zone.lookup_all_raw(name, true) {
                 LookupAllResult::Referral(child_zone, ns_rrset) => {
                     assert_eq!(child_zone, subdel.as_ref());
-                    check_rrset(ns_rrset, Type::NS, &[ns_rdata]);
+                    check_rrset(ns_rrset, Type::NS, &[ns_rdata.octets()]);
                 }
                 _ => panic!("expected a referral"),
             }
@@ -317,7 +317,7 @@ mod tests {
         // With process_referrals == false, we expect lookups to enter
         // non-authoritative data.
         match zone.lookup_raw(&ns, Type::A, false) {
-            LookupResult::Found(a_rrset) => check_rrset(a_rrset, Type::A, &[addr_rdata]),
+            LookupResult::Found(a_rrset) => check_rrset(a_rrset, Type::A, &[addr_rdata.octets()]),
             _ => panic!("expected a single A record"),
         }
     }
