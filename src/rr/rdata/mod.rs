@@ -305,8 +305,8 @@ impl fmt::Display for RdataTooLongError {
 
 impl std::error::Error for RdataTooLongError {}
 
-/// An error signalling that RDATA could not be read/decompressed/
-/// validated.
+/// An error signaling that RDATA could not be
+/// read/decompressed/validated.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ReadRdataError {
     InvalidName(name::Error),
