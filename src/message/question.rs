@@ -34,7 +34,8 @@ use crate::util::Caseless;
 ///   queried;
 /// * the [QTYPE](Qtype), which specifies what types of records are
 ///   desired; and
-/// * the [QCLASS](Qclass), which specifies which DNS class(es) to search.
+/// * the [QCLASS](Qclass), which specifies which DNS class(es) to
+///   search.
 ///
 /// While the original specification does not rule out having multiple
 /// questions per message, in practice only one question per message is

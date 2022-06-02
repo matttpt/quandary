@@ -499,7 +499,7 @@ fn add_additional_addresses(zone: &Zone, name: &Name, response: &mut Writer) -> 
 /// [RFC 2308 § 3]: https://datatracker.ietf.org/doc/html/rfc2308#section-3
 fn add_negative_caching_soa(zone: &Zone, response: &mut Writer) -> ProcessingResult<()> {
     // Note that per RFC 2308 § 3, the TTL we are to use is not the TTL
-    // of the SOA record itself, but rather the the SOA MINIMUM field.
+    // of the SOA record itself, but rather the SOA MINIMUM field.
     let soa_rrset = zone.soa().ok_or(ProcessingError::ServFail)?;
     let soa_rdata = soa_rrset.rdatas().next().ok_or(ProcessingError::ServFail)?;
     let ttl = Ttl::from(read_soa_minimum(soa_rdata)?);
@@ -548,7 +548,7 @@ fn add_additional_address_rrsets(
 
 /// Executes `f`, without returning an error if `f` itself fails with
 /// [`writer::Error::Truncation`]. On success, this returns `Ok(true)`
-/// if truncation occured and `Ok(false)` if not.
+/// if truncation occurred and `Ok(false)` if not.
 fn execute_allowing_truncation(f: impl FnOnce() -> writer::Result<()>) -> writer::Result<bool> {
     match f() {
         Err(writer::Error::Truncation) => Ok(true),

@@ -533,7 +533,7 @@ fn pool_worker_loop(pool: Arc<ThreadPool>) {
 /// An error type for [`ThreadGroup`] and [`ThreadPool`] operations.
 #[derive(Debug)]
 pub enum Error {
-    /// An OS-level error occured during the creation of a thread.
+    /// An OS-level error occurred during the creation of a thread.
     Io(io::Error),
 
     /// The [`ThreadGroup`] or [`ThreadPool`] is shutting down.
