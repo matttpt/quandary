@@ -20,3 +20,4 @@ pub mod server;
 pub mod thread;
 mod util;
 pub mod zone;
+pub mod zone_file;

@@ -36,3 +36,18 @@ pub fn nibble_to_ascii_hex_digit(nibble: u8) -> u8 {
         b'a' + nibble - 10
     }
 }
+
+/// Converts an ASCII hexadecimal digit to its numeric value. This
+/// returns [`None`] if `digit` is not one of the ASCII characters
+/// `0` through `9`, `A` through `F`, or `a` through `f`.
+pub fn ascii_hex_digit_to_nibble(digit: u8) -> Option<u8> {
+    if (b'0'..=b'9').contains(&digit) {
+        Some(digit - b'0')
+    } else if (b'A'..=b'F').contains(&digit) {
+        Some(digit - b'A' + 10)
+    } else if (b'a'..=b'f').contains(&digit) {
+        Some(digit - b'a' + 10)
+    } else {
+        None
+    }
+}
