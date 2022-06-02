@@ -115,6 +115,7 @@ impl fmt::Display for ErrorDetails {
 
 /// Kinds of zone file syntax errors.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum ErrorKind {
     AtWhenOriginNotSet,
     BadUtf8(Utf8Error),
