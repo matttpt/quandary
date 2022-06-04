@@ -12,15 +12,14 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-//! Helpers for the [`Rdata::equals`](super::Rdata::equals) and
-//! [`Rdata::validate`](super::Rdata::validate) methods, and their
-//! RR type-specific implementations.
+//! Helpers for [`Rdata::equals`], [`Rdata::read`], and
+//! [`Rdata::validate`], plus their RR type–specific variants.
 
 use super::{Rdata, ReadRdataError};
 use crate::name::Name;
 
 ////////////////////////////////////////////////////////////////////////
-// HELPERS FOR Rdata::equals AND TYPE-SPECIFIC IMPLEMENTATIONS        //
+// HELPERS FOR Rdata::equals AND TYPE-SPECIFIC VARIANTS               //
 ////////////////////////////////////////////////////////////////////////
 
 /// Tests two uncompressed on-the-wire names for equality, falling back
@@ -102,7 +101,7 @@ pub fn validate_name(name: &[u8]) -> Result<(), ReadRdataError> {
 }
 
 ////////////////////////////////////////////////////////////////////////
-// HELPERS FOR Rdata::read                                            //
+// HELPERS FOR Rdata::read AND TYPE-SPECIFIC VARIANTS                 //
 ////////////////////////////////////////////////////////////////////////
 
 /// Prepares to read RDATA by checking that the message buffer is long

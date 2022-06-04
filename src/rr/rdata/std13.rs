@@ -12,7 +12,7 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-//! Helpers for the RR types from the original DNS specification, STD 13
+//! Handling of the RR types from the original DNS specification, STD 13
 //! ([RFC 1034] and [RFC 1035]).
 //!
 //! [RFC 1034]: https://datatracker.ietf.org/doc/html/rfc1034

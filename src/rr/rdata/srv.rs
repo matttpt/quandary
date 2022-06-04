@@ -12,7 +12,7 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-//! Helpers for the [RFC 2782] RR type, SRV.
+//! Handling of the [RFC 2782] RR type, SRV.
 //!
 //! [RFC 2782]: https://datatracker.ietf.org/doc/html/rfc2782
 

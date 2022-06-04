@@ -12,7 +12,7 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-//! Helpers for the [RFC 3596] RR type, AAAA.
+//! Handling of the [RFC 3596] RR type, AAAA.
 //!
 //! [RFC 3596]: https://datatracker.ietf.org/doc/html/rfc3596
 

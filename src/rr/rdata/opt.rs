@@ -12,7 +12,7 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-//! Helpers for the EDNS pseudo-RR type, OPT.
+//! Handling of the EDNS pseudo-RR type, OPT.
 //!
 //! This follows EDNS(0) as restated and refined by [RFC 6891].
 //!
