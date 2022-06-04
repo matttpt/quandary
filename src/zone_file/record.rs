@@ -77,6 +77,7 @@ impl<S: Read> Parser<S> {
         self.context.previous_class = Some(class);
 
         Ok(Some(ParsedRr {
+            line: start_of_line.line,
             owner,
             ttl,
             class,

@@ -151,6 +151,7 @@ struct Context {
 /// Resource record data as returned by [`Parser::next`].
 #[derive(Clone, Debug)]
 pub struct ParsedRr {
+    pub line: usize,
     pub owner: Rc<Name>,
     pub ttl: Ttl,
     pub class: Class,
