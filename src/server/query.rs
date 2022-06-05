@@ -18,7 +18,7 @@ use arrayvec::ArrayVec;
 
 use super::{
     generate_error, handle_processing_errors, set_up_response_header, ProcessingError,
-    ProcessingResult, Response, Server,
+    ProcessingResult, ReceivedInfo, Response, Server,
 };
 use crate::class::Class;
 use crate::message::{writer, Qclass, Qtype, Question, Rcode, Reader, Writer};
@@ -31,8 +31,8 @@ impl Server {
     pub(super) fn handle_query(
         &self,
         mut query: Reader,
+        received_info: ReceivedInfo,
         response_buf: &mut [u8],
-        over_tcp: bool,
     ) -> Response {
         // Read the query.
         let question = match read_query(&mut query) {
@@ -70,7 +70,7 @@ impl Server {
             return generate_error(&query, Some(&question), Rcode::Refused, response_buf);
         }
 
-        match handle_non_axfr_query(&self.zone, query, question, response_buf, over_tcp) {
+        match handle_non_axfr_query(&self.zone, query, question, received_info, response_buf) {
             Some(response_len) => Response::Single(response_len),
             None => Response::None,
         }
@@ -83,8 +83,8 @@ fn handle_non_axfr_query<'a>(
     zone: &Zone,
     query: Reader,
     question: Question,
+    received_info: ReceivedInfo,
     response_buf: &'a mut [u8],
-    over_tcp: bool,
 ) -> Option<usize> {
     let mut response = Writer::try_from(response_buf).ok()?;
     set_up_response_header(&query, &mut response);
@@ -100,7 +100,7 @@ fn handle_non_axfr_query<'a>(
             &mut response,
         )
     };
-    handle_processing_errors(result, &mut response, over_tcp);
+    handle_processing_errors(result, received_info, &mut response);
     Some(response.finish())
 }
 

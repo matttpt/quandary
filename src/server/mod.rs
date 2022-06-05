@@ -17,6 +17,8 @@
 //! The [`Server`] structure is the heart of this module; see its
 //! documentation for details.
 
+use std::net::IpAddr;
+
 use crate::message::{writer, Opcode, Question, Rcode, Reader, Writer};
 use crate::zone::Zone;
 
@@ -56,14 +58,14 @@ impl Server {
     /// Handles a received DNS message. This is the API through which
     /// I/O providers submit messages.
     ///
-    /// `received_buf` contains the message received. `response_buf` is
-    /// a buffer into which a response message may be serialized. Its
-    /// length is interpreted as the maximum size of a DNS message the
-    /// caller is willing to send. To comply with the DNS specification,
-    /// it should be at least 512 octets long for UDP transport. For TCP
-    /// transport, the maximum possible size (65,535 octets) should be
-    /// used. `over_tcp` specifies whether the underlying transport was
-    /// TCP (`true`) or UDP (`false`).
+    /// `received_buf` contains the message received, and `received_info`
+    /// provides additional information about it (see [`ReceivedInfo`]).
+    /// `response_buf` is a buffer into which a response message may be
+    /// serialized. Its length is interpreted as the maximum size of a
+    /// DNS message the caller is willing to send. To comply with the
+    /// DNS specification, it should be at least 512 octets long for UDP
+    /// transport. For TCP transport, the maximum possible size (65,535
+    /// octets) should be used.
     ///
     /// A [`Response`] is returned, signifying whether a response is to
     /// be sent and, if so, how long the response message written into
@@ -71,13 +73,13 @@ impl Server {
     pub fn handle_message(
         &self,
         received_buf: &[u8],
+        received_info: ReceivedInfo,
         response_buf: &mut [u8],
-        over_tcp: bool,
     ) -> Response {
         if let Ok(received) = Reader::try_from(received_buf) {
             // We currently only support standard queries.
             if received.opcode() == Opcode::Query {
-                self.handle_query(received, response_buf, over_tcp)
+                self.handle_query(received, received_info, response_buf)
             } else {
                 generate_error(&received, None, Rcode::NotImp, response_buf)
             }
@@ -86,6 +88,21 @@ impl Server {
             Response::None
         }
     }
+}
+
+/// Provides network-related information about a received DNS message to
+/// [`Server::handle_message`].
+#[derive(Clone, Copy, Debug)]
+pub struct ReceivedInfo {
+    pub source: IpAddr,
+    pub transport: Transport,
+}
+
+/// Indicates the transport through which a DNS message was received.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Transport {
+    Tcp,
+    Udp,
 }
 
 /// Indicates to the caller of [`Server::handle_message`] what kind of
@@ -170,14 +187,14 @@ fn reconfigure_as_servfail(response: &mut Writer) {
 ///   response.
 fn handle_processing_errors(
     processing_result: ProcessingResult<()>,
+    received_info: ReceivedInfo,
     response: &mut Writer,
-    over_tcp: bool,
 ) {
     match processing_result {
         Ok(()) => (),
         Err(ProcessingError::ServFail) => reconfigure_as_servfail(response),
         Err(ProcessingError::Truncation) => {
-            if over_tcp {
+            if received_info.transport == Transport::Tcp {
                 // We can't ask the client to retry over TCP, since
                 // we are already over TCP.
                 reconfigure_as_servfail(response);
