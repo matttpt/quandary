@@ -25,6 +25,10 @@ use crate::zone::Zone;
 use log::error;
 
 mod query;
+mod rrl;
+
+use rrl::Rrl;
+pub use rrl::{RrlParamError, RrlParams};
 
 ////////////////////////////////////////////////////////////////////////
 // SERVER PUBLIC API                                                  //
@@ -47,12 +51,19 @@ mod query;
 /// [`Server::new`].
 pub struct Server {
     zone: Zone,
+    rrl: Option<Rrl>,
 }
 
 impl Server {
     /// Creates a new `Server` that will serve the provided [`Zone`].
     pub fn new(zone: Zone) -> Self {
-        Self { zone }
+        Self { zone, rrl: None }
+    }
+
+    /// Configures response rate-limiting for this `Server`. If passed
+    /// `None`, then rate-limiting is disabled.
+    pub fn set_rrl_params(&mut self, rrl_params: Option<RrlParams>) {
+        self.rrl = rrl_params.map(Rrl::new);
     }
 
     /// Handles a received DNS message. This is the API through which

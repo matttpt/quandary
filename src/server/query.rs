@@ -16,9 +16,10 @@
 
 use arrayvec::ArrayVec;
 
+use super::rrl::Action;
 use super::{
     generate_error, handle_processing_errors, set_up_response_header, ProcessingError,
-    ProcessingResult, ReceivedInfo, Response, Server,
+    ProcessingResult, ReceivedInfo, Response, Server, Transport,
 };
 use crate::class::Class;
 use crate::message::{writer, Qclass, Qtype, Question, Rcode, Reader, Writer};
@@ -70,38 +71,69 @@ impl Server {
             return generate_error(&query, Some(&question), Rcode::Refused, response_buf);
         }
 
-        match handle_non_axfr_query(&self.zone, query, question, received_info, response_buf) {
+        match self.handle_non_axfr_query(&self.zone, query, question, received_info, response_buf) {
             Some(response_len) => Response::Single(response_len),
             None => Response::None,
         }
     }
-}
 
-/// Handles a non-AXFR DNS query. Returns the length of the DNS response
-/// written into `response_buf` or `None` if no response should be sent.
-fn handle_non_axfr_query<'a>(
-    zone: &Zone,
-    query: Reader,
-    question: Question,
-    received_info: ReceivedInfo,
-    response_buf: &'a mut [u8],
-) -> Option<usize> {
-    let mut response = Writer::try_from(response_buf).ok()?;
-    set_up_response_header(&query, &mut response);
-    response.add_question(&question).ok()?;
+    /// Handles a non-AXFR DNS query. Returns the length of the DNS
+    /// response written into `response_buf` or `None` if no response
+    /// should be sent.
+    fn handle_non_axfr_query<'a>(
+        &self,
+        zone: &Zone,
+        query: Reader,
+        question: Question,
+        received_info: ReceivedInfo,
+        response_buf: &'a mut [u8],
+    ) -> Option<usize> {
+        let mut response = Writer::try_from(response_buf).ok()?;
+        set_up_response_header(&query, &mut response);
+        response.add_question(&question).ok()?;
 
-    let result = if question.qtype == Qtype::ANY {
-        answer_any(zone, &question.qname, &mut response)
-    } else {
-        answer(
-            zone,
-            &question.qname,
-            Type::from(question.qtype),
-            &mut response,
-        )
-    };
-    handle_processing_errors(result, received_info, &mut response);
-    Some(response.finish())
+        let mut source_of_synthesis = None;
+        let result = if question.qtype == Qtype::ANY {
+            answer_any(
+                zone,
+                &question.qname,
+                &mut response,
+                &mut source_of_synthesis,
+            )
+        } else {
+            answer(
+                zone,
+                &question.qname,
+                Type::from(question.qtype),
+                &mut response,
+                &mut source_of_synthesis,
+            )
+        };
+        handle_processing_errors(result, received_info, &mut response);
+
+        // Completed query responses are subject to rate-limiting if
+        // it's enabled and if the transport is UDP.
+        if let Some(ref rrl) = self.rrl {
+            if received_info.transport == Transport::Udp {
+                let qname = source_of_synthesis.unwrap_or(&question.qname);
+                match rrl.process_response(received_info.source, qname, response.rcode()) {
+                    Action::Send => Some(response.finish()),
+                    Action::Slip => {
+                        response.clear_rrs();
+                        response.set_tc(true);
+                        Some(response.finish())
+                    }
+                    Action::Drop => None,
+                }
+            } else {
+                // The transport is not UDP.
+                Some(response.finish())
+            }
+        } else {
+            // Rate-limiting is disabled.
+            Some(response.finish())
+        }
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -135,18 +167,29 @@ fn read_query(query: &mut Reader) -> Result<Question, Option<Question>> {
 
 /// Answers a query for a specific RR type once the appropriate zone to
 /// search has been determined.
-fn answer(zone: &Zone, qname: &Name, rr_type: Type, response: &mut Writer) -> ProcessingResult<()> {
+fn answer<'z>(
+    zone: &'z Zone,
+    qname: &Name,
+    rr_type: Type,
+    response: &mut Writer,
+    source_of_synthesis: &mut Option<&'z Name>,
+) -> ProcessingResult<()> {
     match zone.lookup(qname, rr_type) {
         LookupResult::Found(found) => {
+            *source_of_synthesis = found.source_of_synthesis;
             response.set_aa(true);
             response.add_answer_rrset(qname, found.rrset)?;
             do_additional_section_processing(zone, found.rrset, response)
         }
-        LookupResult::Cname(cname) => do_cname(zone, qname, cname.rrset, rr_type, response),
+        LookupResult::Cname(cname) => {
+            *source_of_synthesis = cname.source_of_synthesis;
+            do_cname(zone, qname, cname.rrset, rr_type, response)
+        }
         LookupResult::Referral(referral) => {
             do_referral(zone, referral.child_zone, referral.ns_rrset, response)
         }
-        LookupResult::NoRecords(_) => {
+        LookupResult::NoRecords(no_records) => {
+            *source_of_synthesis = no_records.source_of_synthesis;
             response.set_aa(true);
             add_negative_caching_soa(zone, response)
         }
@@ -164,9 +207,15 @@ fn answer(zone: &Zone, qname: &Name, rr_type: Type, response: &mut Writer) -> Pr
 
 /// Answers a query with QTYPE * (ANY) once the appropriate zone to
 /// search has been determined.
-fn answer_any(zone: &Zone, qname: &Name, response: &mut Writer) -> ProcessingResult<()> {
+fn answer_any<'z>(
+    zone: &'z Zone,
+    qname: &Name,
+    response: &mut Writer,
+    source_of_synthesis: &mut Option<&'z Name>,
+) -> ProcessingResult<()> {
     match zone.lookup_all(qname) {
         LookupAllResult::Found(found) => {
+            *source_of_synthesis = found.source_of_synthesis;
             response.set_aa(true);
             let mut n_added = 0;
             for rrset in found.rrsets.iter() {
