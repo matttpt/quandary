@@ -74,9 +74,19 @@ enum Section {
 }
 
 impl Writer<'_> {
+    /// Returns the current 16-bit ID of the message.
+    pub fn id(&self) -> u16 {
+        u16::from_be_bytes(self.octets[ID_START..ID_END].try_into().unwrap())
+    }
+
     /// Sets the 16-bit ID of the message.
     pub fn set_id(&mut self, id: u16) {
         self.write_u16(ID_START, id);
+    }
+
+    /// Returns the current value of the QR (query response) bit.
+    pub fn qr(&self) -> bool {
+        (self.octets[QR_BYTE] & QR_MASK) != 0
     }
 
     /// Sets or clears the QR (query response) bit.
@@ -88,10 +98,21 @@ impl Writer<'_> {
         }
     }
 
+    /// Returns the message's current opcode.
+    pub fn opcode(&self) -> Opcode {
+        let raw = (self.octets[OPCODE_BYTE] & OPCODE_MASK) >> OPCODE_SHIFT;
+        raw.try_into().unwrap()
+    }
+
     /// Sets the message's opcode.
     pub fn set_opcode(&mut self, opcode: Opcode) {
         self.octets[OPCODE_BYTE] &= !OPCODE_MASK;
         self.octets[OPCODE_BYTE] |= u8::from(opcode) << OPCODE_SHIFT;
+    }
+
+    /// Returns the current value of the AA (authoritative answer) bit.
+    pub fn aa(&self) -> bool {
+        (self.octets[AA_BYTE] & AA_MASK) != 0
     }
 
     /// Sets or clears the AA (authoritative answer) bit.
@@ -103,6 +124,11 @@ impl Writer<'_> {
         }
     }
 
+    /// Returns the current value of the TC (truncation) bit.
+    pub fn tc(&self) -> bool {
+        (self.octets[TC_BYTE] & TC_MASK) != 0
+    }
+
     /// Sets or clears the TC (truncation) bit.
     pub fn set_tc(&mut self, tc: bool) {
         if tc {
@@ -110,6 +136,11 @@ impl Writer<'_> {
         } else {
             self.octets[TC_BYTE] &= !TC_MASK;
         }
+    }
+
+    /// Returns the current value of the RD (recursion desired) bit.
+    pub fn rd(&self) -> bool {
+        (self.octets[RD_BYTE] & RD_MASK) != 0
     }
 
     /// Sets or clears the RD (recursion desired) bit.
@@ -121,6 +152,11 @@ impl Writer<'_> {
         }
     }
 
+    /// Returns the current value of the RA (recursion available) bit.
+    pub fn ra(&self) -> bool {
+        (self.octets[RA_BYTE] & RA_MASK) != 0
+    }
+
     /// Sets or clears the RA (recursion available) bit.
     pub fn set_ra(&mut self, ra: bool) {
         if ra {
@@ -128,6 +164,12 @@ impl Writer<'_> {
         } else {
             self.octets[RA_BYTE] &= !RA_MASK;
         }
+    }
+
+    /// Returns the message's current RCODE.
+    pub fn rcode(&self) -> Rcode {
+        let raw = self.octets[RCODE_BYTE] & RCODE_MASK;
+        raw.try_into().unwrap()
     }
 
     /// Sets the message's RCODE.
