@@ -236,12 +236,12 @@ fn scan_node<'a>(
 /// is in the zone, an address record for it is present (check 8).
 fn check_apex_ns_address(zone: &Zone, nsdname: Box<Name>, issues: &mut Vec<ValidationIssue>) {
     match zone.lookup_all(&nsdname) {
-        LookupAllResult::Found(rrsets) => {
-            if !has_address(rrsets) {
+        LookupAllResult::Found(found) => {
+            if !has_address(found.rrsets) {
                 issues.push(ValidationIssue::MissingNsAddress(nsdname));
             }
         }
-        LookupAllResult::WrongZone | LookupAllResult::Referral(_, _) => (),
+        LookupAllResult::WrongZone | LookupAllResult::Referral(_) => (),
         LookupAllResult::NxDomain => issues.push(ValidationIssue::MissingNsAddress(nsdname)),
     }
 }
@@ -256,29 +256,29 @@ fn check_delegation_ns_address(
     issues: &mut Vec<ValidationIssue>,
 ) {
     match parent_zone.lookup_all(&nsdname) {
-        LookupAllResult::Found(rrsets) => {
+        LookupAllResult::Found(found) => {
             // A glue record is not necessary, since nsdname is within
             // the parent zone itself. However, we ought to make sure
             // that the parent zone actually has addresses for the
             // nameserver! (This is check 8.)
-            if !has_address(rrsets) {
+            if !has_address(found.rrsets) {
                 issues.push(ValidationIssue::MissingNsAddress(nsdname));
             }
         }
-        LookupAllResult::Referral(ns_child_zone, _) => {
+        LookupAllResult::Referral(referral) => {
             // The nameserver for the delegation is inside some child
-            // zone (ns_child_zone) of parent_zone. Whether we require
-            // glue depends on parent_zone's glue policy. (This is
-            // check 3.)
+            // zone (referral.child_zone) of parent_zone. Whether we
+            // require glue depends on parent_zone's glue policy. (This
+            // is check 3.)
             match parent_zone.glue_policy {
                 GluePolicy::Wide => {
                     // Glue is always needed.
                     check_glue(parent_zone, nsdname, issues);
                 }
                 GluePolicy::Narrow => {
-                    // Glue is needed only if ns_child_zone is
-                    // child_zone.
-                    if ns_child_zone == child_zone {
+                    // Glue is needed only if the child zone in which
+                    // the nameserver resides is child_zone.
+                    if referral.child_zone == child_zone {
                         check_glue(parent_zone, nsdname, issues);
                     }
                 }
@@ -301,8 +301,8 @@ fn check_delegation_ns_address(
 /// nameserver `nsdname`.
 fn check_glue(parent_zone: &Zone, nsdname: Box<Name>, issues: &mut Vec<ValidationIssue>) {
     match parent_zone.lookup_all_raw(&nsdname, false) {
-        LookupAllResult::Found(rrsets) => {
-            if !has_address(rrsets) {
+        LookupAllResult::Found(found) => {
+            if !has_address(found.rrsets) {
                 issues.push(ValidationIssue::MissingGlue(nsdname));
             }
         }
@@ -314,12 +314,12 @@ fn check_glue(parent_zone: &Zone, nsdname: Box<Name>, issues: &mut Vec<Validatio
 /// is in the zone, an address record for it is present (check 9).
 fn check_mx_address(zone: &Zone, name: Box<Name>, issues: &mut Vec<ValidationIssue>) {
     match zone.lookup_all(&name) {
-        LookupAllResult::Found(rrsets) => {
-            if !has_address(rrsets) {
+        LookupAllResult::Found(found) => {
+            if !has_address(found.rrsets) {
                 issues.push(ValidationIssue::MissingMxAddress(name));
             }
         }
-        LookupAllResult::WrongZone | LookupAllResult::Referral(_, _) => (),
+        LookupAllResult::WrongZone | LookupAllResult::Referral(_) => (),
         LookupAllResult::NxDomain => issues.push(ValidationIssue::MissingMxAddress(name)),
     }
 }

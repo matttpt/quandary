@@ -137,16 +137,16 @@ fn read_query(query: &mut Reader) -> Result<Question, Option<Question>> {
 /// search has been determined.
 fn answer(zone: &Zone, qname: &Name, rr_type: Type, response: &mut Writer) -> ProcessingResult<()> {
     match zone.lookup(qname, rr_type) {
-        LookupResult::Found(rrset) => {
+        LookupResult::Found(found) => {
             response.set_aa(true);
-            response.add_answer_rrset(qname, rrset)?;
-            do_additional_section_processing(zone, rrset, response)
+            response.add_answer_rrset(qname, found.rrset)?;
+            do_additional_section_processing(zone, found.rrset, response)
         }
-        LookupResult::Cname(cname_rrset) => do_cname(zone, qname, cname_rrset, rr_type, response),
-        LookupResult::Referral(child_zone, ns_rrset) => {
-            do_referral(zone, child_zone, ns_rrset, response)
+        LookupResult::Cname(cname) => do_cname(zone, qname, cname.rrset, rr_type, response),
+        LookupResult::Referral(referral) => {
+            do_referral(zone, referral.child_zone, referral.ns_rrset, response)
         }
-        LookupResult::NoRecords => {
+        LookupResult::NoRecords(_) => {
             response.set_aa(true);
             add_negative_caching_soa(zone, response)
         }
@@ -166,10 +166,10 @@ fn answer(zone: &Zone, qname: &Name, rr_type: Type, response: &mut Writer) -> Pr
 /// search has been determined.
 fn answer_any(zone: &Zone, qname: &Name, response: &mut Writer) -> ProcessingResult<()> {
     match zone.lookup_all(qname) {
-        LookupAllResult::Found(rrsets) => {
+        LookupAllResult::Found(found) => {
             response.set_aa(true);
             let mut n_added = 0;
-            for rrset in rrsets.iter() {
+            for rrset in found.rrsets.iter() {
                 response.add_answer_rrset(qname, rrset)?;
                 n_added += 1;
             }
@@ -178,8 +178,8 @@ fn answer_any(zone: &Zone, qname: &Name, response: &mut Writer) -> ProcessingRes
             }
             Ok(())
         }
-        LookupAllResult::Referral(child_zone, ns_rrset) => {
-            do_referral(zone, child_zone, ns_rrset, response)
+        LookupAllResult::Referral(referral) => {
+            do_referral(zone, referral.child_zone, referral.ns_rrset, response)
         }
         LookupAllResult::NxDomain => {
             response.set_rcode(Rcode::NxDomain);
@@ -307,11 +307,11 @@ fn follow_cname_2(
     // records from the other zone that we might include. (See e.g. the
     // scrub_sanitize subroutine in Unbound.)
     match zone.lookup(&cname, rr_type) {
-        LookupResult::Found(rrset) => {
-            response.add_answer_rrset(&cname, rrset)?;
-            do_additional_section_processing(zone, rrset, response)
+        LookupResult::Found(found) => {
+            response.add_answer_rrset(&cname, found.rrset)?;
+            do_additional_section_processing(zone, found.rrset, response)
         }
-        LookupResult::Cname(next_cname_rrset) => {
+        LookupResult::Cname(next_cname) => {
             // The CNAME chain continues. If the CNAME chain is getting
             // too long, we refuse to go any further; otherwise we
             // restart the CNAME-following process with the next CNAME
@@ -319,20 +319,20 @@ fn follow_cname_2(
             if owners_seen.is_full() {
                 Err(ProcessingError::ServFail)
             } else {
-                response.add_answer_rrset(&cname, next_cname_rrset)?;
+                response.add_answer_rrset(&cname, next_cname.rrset)?;
                 owners_seen.push(cname);
                 follow_cname_1(
                     zone,
                     qname,
-                    next_cname_rrset,
+                    next_cname.rrset,
                     rr_type,
                     response,
                     owners_seen,
                 )
             }
         }
-        LookupResult::Referral(child_zone, ns_rrset) => {
-            do_referral(zone, child_zone, ns_rrset, response)
+        LookupResult::Referral(referral) => {
+            do_referral(zone, referral.child_zone, referral.ns_rrset, response)
         }
         // Per RFC 6604 § 3, the RCODE is set based on the last query
         // cycle. Therefore, the no-records case should be NOERROR and
@@ -340,7 +340,7 @@ fn follow_cname_2(
         // seems to be a change from RFC 1034 § 3.4.2, whose step 3(c)
         // calls for an authoritative name error (NXDOMAIN) only when
         // the failed lookup is for the original QNAME.
-        LookupResult::NoRecords => add_negative_caching_soa(zone, response),
+        LookupResult::NoRecords(_) => add_negative_caching_soa(zone, response),
         LookupResult::NxDomain => {
             response.set_rcode(Rcode::NxDomain);
             add_negative_caching_soa(zone, response)
@@ -418,8 +418,8 @@ fn add_referral_additional_addresses(
     name: &Name,
     response: &mut Writer,
 ) -> writer::Result<()> {
-    if let LookupAllResult::Found(rrsets) = parent_zone.lookup_all_raw(name, false) {
-        add_additional_address_rrsets(name, rrsets, response)
+    if let LookupAllResult::Found(found) = parent_zone.lookup_all_raw(name, false) {
+        add_additional_address_rrsets(name, found.rrsets, response)
     } else {
         Ok(())
     }
@@ -482,8 +482,8 @@ fn do_additional_section_processing(
 /// found to the additional section of `response`. Note that, on error,
 /// some of the addresses may have been successfully written.
 fn add_additional_addresses(zone: &Zone, name: &Name, response: &mut Writer) -> writer::Result<()> {
-    if let LookupAllResult::Found(rrsets) = zone.lookup_all(name) {
-        add_additional_address_rrsets(name, rrsets, response)
+    if let LookupAllResult::Found(found) = zone.lookup_all(name) {
+        add_additional_address_rrsets(name, found.rrsets, response)
     } else {
         Ok(())
     }
@@ -608,7 +608,7 @@ mod tests {
         let mut buf = [0; 512];
         let mut writer = Writer::try_from(&mut buf[..]).unwrap();
         let cname_rrset = match zone.lookup(&owner, Type::CNAME) {
-            LookupResult::Found(cname_rrset) => cname_rrset,
+            LookupResult::Found(found) => found.rrset,
             _ => panic!(),
         };
         assert_eq!(

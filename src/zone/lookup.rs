@@ -55,19 +55,18 @@ use super::{Node, Zone};
 #[derive(Debug)]
 pub enum LookupResult<'a> {
     /// The desired records were found.
-    Found(&'a Rrset),
+    Found(Found<'a>),
 
     /// No records were found, but a CNAME record was present.
-    Cname(&'a Rrset),
+    Cname(Cname<'a>),
 
     /// The lookup encountered an NS RRset and would therefore leave
-    /// authoritative data. The name of the delegation point and its
-    /// NS [`Rrset`] are returned.
-    Referral(&'a Name, &'a Rrset),
+    /// authoritative data.
+    Referral(Referral<'a>),
 
     /// A node with the given name exists, but it has no records of the
     /// desired type.
-    NoRecords,
+    NoRecords(NoRecords<'a>),
 
     /// No node with the given name exists.
     NxDomain,
@@ -80,17 +79,73 @@ pub enum LookupResult<'a> {
 #[derive(Debug)]
 pub enum LookupAllResult<'a> {
     /// A node with the given name exists.
-    Found(&'a RrsetList),
+    Found(FoundAll<'a>),
 
     /// The lookup encountered an NS RRset and would therefore leave
-    /// authoritative data. See [`LookupResult::Referral`].
-    Referral(&'a Name, &'a Rrset),
+    /// authoritative data.
+    Referral(Referral<'a>),
 
     /// No node with the given name exists.
     NxDomain,
 
     /// The provided name is not within the zone's hierarchy.
     WrongZone,
+}
+
+/// Data returned when a single-type lookup finds records of the
+/// requested type.
+#[derive(Debug)]
+pub struct Found<'a> {
+    /// The RRset that was looked up.
+    pub rrset: &'a Rrset,
+
+    /// If this result was synthesized from a wildcard domain name, this
+    /// indicates the source of synthesis.
+    pub source_of_synthesis: Option<&'a Name>,
+}
+
+/// Data returned when a lookup of all record types successfully finds
+/// the target domain name.
+#[derive(Debug)]
+pub struct FoundAll<'a> {
+    /// The RRsets of the domain name that was looked up.
+    pub rrsets: &'a RrsetList,
+
+    /// If this result was synthesized from a wildcard domain name, this
+    /// indicates the source of synthesis.
+    pub source_of_synthesis: Option<&'a Name>,
+}
+
+/// Data returned when a single-type lookup finds a CNAME at the target
+/// domain (and another RR type was requested).
+#[derive(Debug)]
+pub struct Cname<'a> {
+    /// The CNAME RRset found at the target domain name.
+    pub rrset: &'a Rrset,
+
+    /// If this result was synthesized from a wildcard domain name, this
+    /// indicates the source of synthesis.
+    pub source_of_synthesis: Option<&'a Name>,
+}
+
+/// Data returned when a lookup encounters a zone cut.
+#[derive(Debug)]
+pub struct Referral<'a> {
+    /// The domain name of the child zone, i.e., the name at which NS
+    /// records were found.
+    pub child_zone: &'a Name,
+
+    /// The NS RRset found at the zone cut.
+    pub ns_rrset: &'a Rrset,
+}
+
+/// Data returned when a single-type lookup finds the target domain
+/// name, but it owns no records of the requested RR type.
+#[derive(Debug)]
+pub struct NoRecords<'a> {
+    /// If this result was synthesized from a wildcard domain name, this
+    /// indicates the source of synthesis.
+    pub source_of_synthesis: Option<&'a Name>,
 }
 
 impl Zone {
@@ -125,16 +180,24 @@ impl Zone {
     /// This is primarily useful for looking up glue records.
     pub fn lookup_raw(&self, name: &Name, rr_type: Type, process_referrals: bool) -> LookupResult {
         match self.lookup_all_raw(name, process_referrals) {
-            LookupAllResult::Found(rrset_list) => {
-                if let Some(rrset) = rrset_list.lookup(rr_type) {
-                    LookupResult::Found(rrset)
-                } else if let Some(rrset) = rrset_list.lookup(Type::CNAME) {
-                    LookupResult::Cname(rrset)
+            LookupAllResult::Found(found_all) => {
+                if let Some(rrset) = found_all.rrsets.lookup(rr_type) {
+                    LookupResult::Found(Found {
+                        rrset,
+                        source_of_synthesis: found_all.source_of_synthesis,
+                    })
+                } else if let Some(rrset) = found_all.rrsets.lookup(Type::CNAME) {
+                    LookupResult::Cname(Cname {
+                        rrset,
+                        source_of_synthesis: found_all.source_of_synthesis,
+                    })
                 } else {
-                    LookupResult::NoRecords
+                    LookupResult::NoRecords(NoRecords {
+                        source_of_synthesis: found_all.source_of_synthesis,
+                    })
                 }
             }
-            LookupAllResult::Referral(name, rrset) => LookupResult::Referral(name, rrset),
+            LookupAllResult::Referral(referral) => LookupResult::Referral(referral),
             LookupAllResult::NxDomain => LookupResult::NxDomain,
             LookupAllResult::WrongZone => LookupResult::WrongZone,
         }
@@ -190,12 +253,18 @@ fn lookup_impl<'a>(
     // the node is the target node!
     if !at_apex && process_referrals {
         if let Some(ns_rrset) = node.rrsets.lookup(Type::NS) {
-            return LookupAllResult::Referral(&node.name, ns_rrset);
+            return LookupAllResult::Referral(Referral {
+                child_zone: &node.name,
+                ns_rrset,
+            });
         }
     }
 
     if level == 0 {
-        LookupAllResult::Found(&node.rrsets)
+        LookupAllResult::Found(FoundAll {
+            rrsets: &node.rrsets,
+            source_of_synthesis: None,
+        })
     } else {
         // Try to traverse down the tree. If deeper nodes do not exist,
         // then this node is the "closest encloser" (see RFC 4592 §
@@ -204,7 +273,10 @@ fn lookup_impl<'a>(
         if let Some(subnode) = node.children.get(&name[level - 1]) {
             lookup_impl(subnode, name, level - 1, process_referrals, false)
         } else if let Some(source_of_synthesis) = node.children.get(Label::asterisk()) {
-            LookupAllResult::Found(&source_of_synthesis.rrsets)
+            LookupAllResult::Found(FoundAll {
+                rrsets: &source_of_synthesis.rrsets,
+                source_of_synthesis: Some(&source_of_synthesis.name),
+            })
         } else {
             LookupAllResult::NxDomain
         }
@@ -254,7 +326,10 @@ mod tests {
         zone.add(&www, Type::A, Class::IN, Ttl::from(3600), localhost)
             .unwrap();
         match zone.lookup(&www, Type::A) {
-            LookupResult::Found(rrset) => check_rrset(rrset, Type::A, &[localhost.octets()]),
+            LookupResult::Found(found) => {
+                check_rrset(found.rrset, Type::A, &[localhost.octets()]);
+                assert!(found.source_of_synthesis.is_none());
+            }
             _ => panic!("expected an A record"),
         }
     }
@@ -275,7 +350,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             zone.lookup(&www, Type::AAAA),
-            LookupResult::NoRecords
+            LookupResult::NoRecords(no_records) if no_records.source_of_synthesis.is_none(),
         ));
     }
 
@@ -306,9 +381,9 @@ mod tests {
         // when the target name is the delegation point.
         for name in [&ns, &subdel] {
             match zone.lookup_all_raw(name, true) {
-                LookupAllResult::Referral(child_zone, ns_rrset) => {
-                    assert_eq!(child_zone, subdel.as_ref());
-                    check_rrset(ns_rrset, Type::NS, &[ns_rdata.octets()]);
+                LookupAllResult::Referral(referral) => {
+                    assert_eq!(referral.child_zone, subdel.as_ref());
+                    check_rrset(referral.ns_rrset, Type::NS, &[ns_rdata.octets()]);
                 }
                 _ => panic!("expected a referral"),
             }
@@ -317,7 +392,7 @@ mod tests {
         // With process_referrals == false, we expect lookups to enter
         // non-authoritative data.
         match zone.lookup_raw(&ns, Type::A, false) {
-            LookupResult::Found(a_rrset) => check_rrset(a_rrset, Type::A, &[addr_rdata.octets()]),
+            LookupResult::Found(found) => check_rrset(found.rrset, Type::A, &[addr_rdata.octets()]),
             _ => panic!("expected a single A record"),
         }
     }
@@ -370,18 +445,27 @@ mod tests {
 
         // The following are synthesized from a wildcard.
         match zone.lookup(&boxed_name("host3.example."), Type::MX) {
-            LookupResult::Found(rrset) => {
-                check_rrset(rrset, Type::MX, &[RFC_4592_MX]);
+            LookupResult::Found(found) => {
+                check_rrset(found.rrset, Type::MX, &[RFC_4592_MX]);
+                assert_eq!(
+                    found.source_of_synthesis,
+                    Some(boxed_name("*.example.").as_ref()),
+                );
             }
             _ => panic!("host3.example. MX did not return the expected record"),
         }
         assert!(matches!(
             zone.lookup(&boxed_name("host3.example."), Type::A),
-            LookupResult::NoRecords
+            LookupResult::NoRecords(no_records)
+                if no_records.source_of_synthesis == Some(boxed_name("*.example.").as_ref()),
         ));
         match zone.lookup(&boxed_name("foo.bar.example."), Type::TXT) {
-            LookupResult::Found(rrset) => {
-                check_rrset(rrset, Type::TXT, &[RFC_4592_WILDCARD_TXT]);
+            LookupResult::Found(found) => {
+                check_rrset(found.rrset, Type::TXT, &[RFC_4592_WILDCARD_TXT]);
+                assert_eq!(
+                    found.source_of_synthesis,
+                    Some(boxed_name("*.example.").as_ref()),
+                );
             }
             _ => panic!("foo.bar.example. TXT did not return the expected record"),
         }
@@ -390,20 +474,20 @@ mod tests {
         // 4592 § 2.2.1 for the reasons why!)
         assert!(matches!(
             zone.lookup(&boxed_name("host1.example."), Type::MX),
-            LookupResult::NoRecords
+            LookupResult::NoRecords(no_records) if no_records.source_of_synthesis.is_none(),
         ));
         assert!(matches!(
             zone.lookup(&boxed_name("sub.*.example."), Type::MX),
-            LookupResult::NoRecords
+            LookupResult::NoRecords(no_records) if no_records.source_of_synthesis.is_none(),
         ));
         assert!(matches!(
             zone.lookup(&boxed_name("_telnet._tcp.host1.example."), Type::SRV),
             LookupResult::NxDomain
         ));
         match zone.lookup(&boxed_name("host.subdel.example."), Type::A) {
-            LookupResult::Referral(child_zone, rrset) => {
-                assert_eq!(child_zone, boxed_name("subdel.example.").as_ref());
-                check_rrset(rrset, Type::NS, &[RFC_4592_NS1, RFC_4592_NS2]);
+            LookupResult::Referral(referral) => {
+                assert_eq!(referral.child_zone, boxed_name("subdel.example.").as_ref());
+                check_rrset(referral.ns_rrset, Type::NS, &[RFC_4592_NS1, RFC_4592_NS2]);
             }
             _ => panic!("host.subdel.example. A did not return the expected referral"),
         }

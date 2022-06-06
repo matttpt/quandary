@@ -25,7 +25,7 @@ mod error;
 mod lookup;
 mod validation;
 pub use error::Error;
-pub use lookup::{LookupAllResult, LookupResult};
+pub use lookup::{Cname, Found, FoundAll, LookupAllResult, LookupResult, NoRecords, Referral};
 pub use validation::ValidationIssue;
 
 /// A DNS zone loaded into memory.
