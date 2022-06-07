@@ -360,10 +360,17 @@ mod tests {
 
     #[test]
     fn read_checks_if_message_is_long_enough() {
+        // For RR types that require decompression and therefore have
+        // type-specific Rdata::read_* functions, the check occurs at
+        // the beginning of those functions; for other RR types, it
+        // occurs in Rdata::read itself. We test every possible RR type
+        // to ensure correct behavior in every case.
         let too_short = [0; 4];
-        assert!(matches!(
-            Rdata::read(Type::A, &too_short[..], 2, 4),
-            Err(ReadRdataError::UnexpectedEom),
-        ));
+        for i in 0..=u16::MAX {
+            assert!(matches!(
+                Rdata::read(Type::from(i), &too_short[..], 2, 4),
+                Err(ReadRdataError::UnexpectedEom),
+            ));
+        }
     }
 }
