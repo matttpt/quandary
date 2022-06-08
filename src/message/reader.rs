@@ -48,6 +48,7 @@ use crate::rr::{Ttl, Type};
 pub struct Reader<'a> {
     octets: &'a [u8],
     cursor: usize,
+    mark: Option<usize>,
 }
 
 impl<'a> Reader<'a> {
@@ -113,6 +114,21 @@ impl<'a> Reader<'a> {
         u16::from_be_bytes(self.octets[ARCOUNT_START..ARCOUNT_END].try_into().unwrap())
     }
 
+    /// Marks the current position in the message for a later call to
+    /// [`Reader::rewind`].
+    pub fn mark(&mut self) {
+        self.mark = Some(self.cursor);
+    }
+
+    /// Rewinds the `Reader` back to the position where [`Reader::mark`]
+    /// was previously called and clears the mark. If [`Reader::mark`]
+    /// was never called, or if the previous mark was already cleared by
+    /// a call to this method, then this will panic.
+    pub fn rewind(&mut self) {
+        self.cursor = self.mark.expect("Reader rewound with no mark set");
+        self.mark = None;
+    }
+
     /// Reads a [`Question`] starting at the current cursor.
     ///
     /// This method is atomic, in that the cursor is not changed on
@@ -169,6 +185,7 @@ impl<'a> TryFrom<&'a [u8]> for Reader<'a> {
             Ok(Self {
                 octets,
                 cursor: HEADER_SIZE,
+                mark: None,
             })
         } else {
             Err(Error::HeaderTooShort)
@@ -356,5 +373,33 @@ mod tests {
             let buf = vec![0; size];
             assert_eq!(Reader::try_from(buf.as_slice()), Err(Error::HeaderTooShort));
         }
+    }
+
+    #[test]
+    fn mark_and_rewind_work() {
+        let mut reader = Reader::try_from(EXAMPLE_COM_NS_MESSAGE).unwrap();
+        reader.mark();
+        let question_the_first_time = reader.read_question().unwrap();
+        assert_eq!(reader.cursor, 29);
+        reader.rewind();
+        assert_eq!(reader.cursor, HEADER_SIZE);
+        let question_the_second_time = reader.read_question().unwrap();
+        assert_eq!(question_the_first_time, question_the_second_time);
+    }
+
+    #[test]
+    fn rewind_unsets_mark() {
+        let mut reader = Reader::try_from(EXAMPLE_COM_NS_MESSAGE).unwrap();
+        reader.mark();
+        assert!(reader.mark.is_some());
+        reader.rewind();
+        assert!(reader.mark.is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "Reader rewound with no mark set")]
+    fn rewind_panics_when_no_mark_is_set() {
+        let mut reader = Reader::try_from(EXAMPLE_COM_NS_MESSAGE).unwrap();
+        reader.rewind();
     }
 }
