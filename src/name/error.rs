@@ -37,10 +37,6 @@ pub enum Error {
     /// The name is too long (longer than 255 octets on the wire).
     NameTooLong,
 
-    /// No labels were provided when constructing a
-    /// [`Name`](super::Name).
-    NoLabelsProvided,
-
     /// The last label was not the null label.
     NonNullTerminal,
 
@@ -68,7 +64,6 @@ impl fmt::Display for Error {
             Self::InvalidPointer => f.write_str("invalid pointer"),
             Self::LabelTooLong => f.write_str("label is longer than 64 bytes on the wire"),
             Self::NameTooLong => f.write_str("name is longer than 255 bytes on the wire"),
-            Self::NoLabelsProvided => f.write_str("no labels provided"),
             Self::NonNullTerminal => f.write_str("last label is not null"),
             Self::NullNonTerminal => f.write_str("non-terminal label is null"),
             Self::StrEmpty => f.write_str("string was empty"),
