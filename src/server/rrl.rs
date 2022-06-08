@@ -161,7 +161,7 @@ impl RrlParams {
                 noerror_rate,
                 nxdomain_rate,
                 error_rate,
-                window: 15,
+                window,
                 slip: 2,
                 ipv4_netmask: 0xffffff00,
                 ipv6_netmask: 0xffffffffffffff00,
