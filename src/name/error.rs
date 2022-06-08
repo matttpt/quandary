@@ -48,6 +48,10 @@ pub enum Error {
     NullNonTerminal,
 
     /// When parsing a [`Name`](super::Name) from a [`str`], the string
+    /// was empty.
+    StrEmpty,
+
+    /// When parsing a [`Name`](super::Name) from a [`str`], the string
     /// was not strictly ASCII.
     StrNotAscii,
 
@@ -67,6 +71,7 @@ impl fmt::Display for Error {
             Self::NoLabelsProvided => f.write_str("no labels provided"),
             Self::NonNullTerminal => f.write_str("last label is not null"),
             Self::NullNonTerminal => f.write_str("non-terminal label is null"),
+            Self::StrEmpty => f.write_str("string was empty"),
             Self::StrNotAscii => f.write_str("string was not ASCII"),
             Self::UnexpectedEom => f.write_str("unexpected end of message"),
         }

@@ -559,6 +559,12 @@ impl FromStr for Box<Name> {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.is_empty() {
+            return Err(Error::StrEmpty);
+        } else if s == "." {
+            return Ok(Name::root().to_owned());
+        }
+
         let mut remaining_octets: &[u8] = s.as_ref();
         let mut builder = NameBuilder::new();
 
@@ -726,6 +732,17 @@ mod tests {
     fn fromstr_works() {
         let name: Box<Name> = "example.test.".parse().unwrap();
         assert_eq!(name.wire_repr(), b"\x07example\x04test\x00");
+    }
+
+    #[test]
+    fn fromstr_works_for_root() {
+        let name: Box<Name> = ".".parse().unwrap();
+        assert_eq!(name.as_ref(), Name::root());
+    }
+
+    #[test]
+    fn fromstr_rejects_empty() {
+        assert_eq!("".parse::<Box<Name>>(), Err(Error::StrEmpty));
     }
 
     #[test]
