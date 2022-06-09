@@ -92,7 +92,7 @@ impl Server {
             if received.opcode() == Opcode::Query {
                 self.handle_query(received, received_info, response_buf)
             } else {
-                generate_error(&received, None, Rcode::NotImp, response_buf)
+                generate_error(&received, None, Rcode::NOTIMP, response_buf)
             }
         } else {
             // Ignore messages that do not contain a full DNS header.
@@ -182,7 +182,7 @@ fn try_generating_error(
 fn reconfigure_as_servfail(response: &mut Writer) {
     // Processing code may have set the AA bit, so we clear it here.
     response.set_aa(false);
-    response.set_rcode(Rcode::ServFail);
+    response.set_rcode(Rcode::SERVFAIL);
     response.clear_rrs();
 }
 

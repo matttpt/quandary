@@ -25,69 +25,70 @@ use std::fmt;
 /// [RFC 1035 § 4.1.1] defines the RCODE field as a four-bit field
 /// indicating success or failure in a DNS response. The first six
 /// values are original to RFC 1035, while the rest have been added in
-/// subsequent extensions of the DNS. The names given to each member of
-/// the `Rcode` enumeration are those listed by the IANA.
+/// subsequent extensions of the DNS.
 ///
 /// EDNS(0) introduced extended RCODEs via the OPT pseudo-RR; these are
 /// not implemented by this type.
 ///
 /// [RFC 1035 § 4.1.1]: https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.1
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
-pub enum Rcode {
-    NoError,
-    FormErr,
-    ServFail,
-    NxDomain,
-    NotImp,
-    Refused,
-    YxDomain,
-    YxRrset,
-    NxRrset,
-    NotAuth,
-    NotZone,
-    DsoTypeNi,
-    Unassigned(u8),
+#[derive(Copy, Clone, Eq, Hash, PartialEq)]
+pub struct Rcode(u8);
+
+impl Rcode {
+    pub const NOERROR: Self = Self(0);
+    pub const FORMERR: Self = Self(1);
+    pub const SERVFAIL: Self = Self(2);
+    pub const NXDOMAIN: Self = Self(3);
+    pub const NOTIMP: Self = Self(4);
+    pub const REFUSED: Self = Self(5);
+    pub const YXDOMAIN: Self = Self(6);
+    pub const YXRRSET: Self = Self(7);
+    pub const NXRRSET: Self = Self(8);
+    pub const NOTAUTH: Self = Self(9);
+    pub const NOTZONE: Self = Self(10);
+    pub const DSOTYPENI: Self = Self(11);
 }
 
 impl TryFrom<u8> for Rcode {
     type Error = IntoRcodeError;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::NoError),
-            1 => Ok(Self::FormErr),
-            2 => Ok(Self::ServFail),
-            3 => Ok(Self::NxDomain),
-            4 => Ok(Self::NotImp),
-            5 => Ok(Self::Refused),
-            6 => Ok(Self::YxDomain),
-            7 => Ok(Self::YxRrset),
-            8 => Ok(Self::NxRrset),
-            9 => Ok(Self::NotAuth),
-            10 => Ok(Self::NotZone),
-            11 => Ok(Self::DsoTypeNi),
-            12..=15 => Ok(Self::Unassigned(value)),
-            _ => Err(IntoRcodeError),
+        if value < 16 {
+            Ok(Self(value))
+        } else {
+            Err(IntoRcodeError)
         }
     }
 }
 
 impl From<Rcode> for u8 {
     fn from(value: Rcode) -> Self {
-        match value {
-            Rcode::NoError => 0,
-            Rcode::FormErr => 1,
-            Rcode::ServFail => 2,
-            Rcode::NxDomain => 3,
-            Rcode::NotImp => 4,
-            Rcode::Refused => 5,
-            Rcode::YxDomain => 6,
-            Rcode::YxRrset => 7,
-            Rcode::NxRrset => 8,
-            Rcode::NotAuth => 9,
-            Rcode::NotZone => 10,
-            Rcode::DsoTypeNi => 11,
-            Rcode::Unassigned(v) => v,
+        value.0
+    }
+}
+
+impl fmt::Debug for Rcode {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", *self)
+    }
+}
+
+impl fmt::Display for Rcode {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Self::NOERROR => f.write_str("NOERROR"),
+            Self::FORMERR => f.write_str("FORMERR"),
+            Self::SERVFAIL => f.write_str("SERVFAIL"),
+            Self::NXDOMAIN => f.write_str("NXDOMAIN"),
+            Self::NOTIMP => f.write_str("NOTIMP"),
+            Self::REFUSED => f.write_str("REFUSED"),
+            Self::YXDOMAIN => f.write_str("YXDOMAIN"),
+            Self::YXRRSET => f.write_str("YXRRSET"),
+            Self::NXRRSET => f.write_str("NXRRSET"),
+            Self::NOTAUTH => f.write_str("NOTAUTH"),
+            Self::NOTZONE => f.write_str("NOTZONE"),
+            Self::DSOTYPENI => f.write_str("DSOTYPENI"),
+            Self(value) => write!(f, "unassigned RCODE {}", value),
         }
     }
 }
@@ -107,3 +108,26 @@ impl fmt::Display for IntoRcodeError {
 }
 
 impl std::error::Error for IntoRcodeError {}
+
+////////////////////////////////////////////////////////////////////////
+// TESTS                                                              //
+////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rcode_constructor_accepts_valid_values() {
+        for value in 0..16 {
+            assert_eq!(Rcode::try_from(value), Ok(Rcode(value)));
+        }
+    }
+
+    #[test]
+    fn rcode_constructor_rejects_large_values() {
+        for value in 16..=u8::MAX {
+            assert_eq!(Rcode::try_from(value), Err(IntoRcodeError));
+        }
+    }
+}

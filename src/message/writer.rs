@@ -545,7 +545,7 @@ mod tests {
         writer.set_opcode(Opcode::Query);
         writer.set_qr(true);
         writer.set_aa(true);
-        writer.set_rcode(Rcode::NoError);
+        writer.set_rcode(Rcode::NOERROR);
         writer.add_question(&QUESTION).unwrap();
         writer.add_answer_rrset(&NAME, &RRSET).unwrap();
         let len = writer.finish();

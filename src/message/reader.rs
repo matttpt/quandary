@@ -330,7 +330,7 @@ mod tests {
         assert!(!reader.tc());
         assert!(reader.rd());
         assert!(reader.ra());
-        assert_eq!(reader.rcode(), Rcode::NoError);
+        assert_eq!(reader.rcode(), Rcode::NOERROR);
         assert_eq!(reader.qdcount(), 1);
         assert_eq!(reader.ancount(), 2);
         assert_eq!(reader.nscount(), 0);

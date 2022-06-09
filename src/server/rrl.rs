@@ -437,8 +437,8 @@ impl Rrl {
 impl From<Rcode> for Category {
     fn from(rcode: Rcode) -> Self {
         match rcode {
-            Rcode::NoError => Self::NoError,
-            Rcode::NxDomain => Self::NxDomain,
+            Rcode::NOERROR => Self::NoError,
+            Rcode::NXDOMAIN => Self::NxDomain,
             _ => Self::Error,
         }
     }

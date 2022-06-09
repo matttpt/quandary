@@ -42,7 +42,7 @@ impl Server {
                 return generate_error(
                     &query,
                     maybe_question.as_ref(),
-                    Rcode::FormErr,
+                    Rcode::FORMERR,
                     response_buf,
                 );
             }
@@ -53,12 +53,12 @@ impl Server {
             question.qtype,
             Qtype::IXFR | Qtype::AXFR | Qtype::MAILB | Qtype::MAILA
         ) {
-            return generate_error(&query, Some(&question), Rcode::NotImp, response_buf);
+            return generate_error(&query, Some(&question), Rcode::NOTIMP, response_buf);
         }
 
         // We do not support QCLASS * (ANY).
         if question.qclass == Qclass::ANY {
-            return generate_error(&query, Some(&question), Rcode::NotImp, response_buf);
+            return generate_error(&query, Some(&question), Rcode::NOTIMP, response_buf);
         }
 
         // When we support multiple zones, here is where we will find
@@ -68,7 +68,7 @@ impl Server {
         // it turns out (after calling the Zone lookup methods) that the
         // QNAME is not part of the single zone we serve.
         if Class::from(question.qclass) != self.zone.class() {
-            return generate_error(&query, Some(&question), Rcode::Refused, response_buf);
+            return generate_error(&query, Some(&question), Rcode::REFUSED, response_buf);
         }
 
         match self.handle_non_axfr_query(&self.zone, query, question, received_info, response_buf) {
@@ -194,12 +194,12 @@ fn answer<'z>(
             add_negative_caching_soa(zone, response)
         }
         LookupResult::NxDomain => {
-            response.set_rcode(Rcode::NxDomain);
+            response.set_rcode(Rcode::NXDOMAIN);
             response.set_aa(true);
             add_negative_caching_soa(zone, response)
         }
         LookupResult::WrongZone => {
-            response.set_rcode(Rcode::Refused);
+            response.set_rcode(Rcode::REFUSED);
             Ok(())
         }
     }
@@ -231,12 +231,12 @@ fn answer_any<'z>(
             do_referral(zone, referral.child_zone, referral.ns_rrset, response)
         }
         LookupAllResult::NxDomain => {
-            response.set_rcode(Rcode::NxDomain);
+            response.set_rcode(Rcode::NXDOMAIN);
             response.set_aa(true);
             add_negative_caching_soa(zone, response)
         }
         LookupAllResult::WrongZone => {
-            response.set_rcode(Rcode::Refused);
+            response.set_rcode(Rcode::REFUSED);
             Ok(())
         }
     }
@@ -391,7 +391,7 @@ fn follow_cname_2(
         // the failed lookup is for the original QNAME.
         LookupResult::NoRecords(_) => add_negative_caching_soa(zone, response),
         LookupResult::NxDomain => {
-            response.set_rcode(Rcode::NxDomain);
+            response.set_rcode(Rcode::NXDOMAIN);
             add_negative_caching_soa(zone, response)
         }
         LookupResult::WrongZone => Ok(()),
