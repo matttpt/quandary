@@ -22,6 +22,6 @@ pub mod reader;
 pub mod writer;
 pub use opcode::{IntoOpcodeError, Opcode};
 pub use question::{Qclass, Qtype, Question};
-pub use rcode::{IntoRcodeError, Rcode};
+pub use rcode::{ExtendedRcode, IntoRcodeError, Rcode};
 pub use reader::Reader;
 pub use writer::Writer;
