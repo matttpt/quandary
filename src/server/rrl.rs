@@ -27,8 +27,8 @@ use std::time::{Duration, Instant};
 
 use rand::Rng;
 
-use crate::message::Rcode;
-use crate::name::Name;
+use super::{Context, Transport};
+use crate::message::{Opcode, Rcode};
 
 ////////////////////////////////////////////////////////////////////////
 // RRL PARAMETERS                                                     //
@@ -296,7 +296,7 @@ pub enum Action {
 impl Rrl {
     /// Creates a new response rate-limiter with the provided
     /// [parameters](`RrlParams`).
-    pub fn new(params: RrlParams) -> Self {
+    pub(super) fn new(params: RrlParams) -> Self {
         let mut buckets = Vec::with_capacity(params.size);
         let now = Instant::now();
         for _ in 0..params.size {
@@ -324,15 +324,27 @@ impl Rrl {
     /// provided destination, QNAME (or source of synthesis for
     /// responses generated through wildcard synthesis), and RCODE. The
     /// RRL tracking table is updated in the process.
-    pub fn process_response(&self, dest: IpAddr, qname: &Name, rcode: Rcode) -> Action {
-        let category = rcode.into();
+    pub(super) fn process_response(&self, context: &mut Context) {
+        if !subject_to_rrl(context) {
+            return;
+        }
 
         // Determine the key. Only non-error responses include the QNAME
         // in the key. NXDOMAIN and other error messages do not, since
         // otherwise an attacker could evade rate-limiting by sending
         // queries with many different QNAMEs that all produce NXDOMAIN
         // or other error responses.
+        let category = context.response.rcode().into();
+        let dest = context.received_info.source;
         let qname_hash = if category == Category::NoError {
+            let qname = if let Some(source_of_synthesis) = context.source_of_synthesis {
+                source_of_synthesis
+            } else {
+                // If this response passed subject_to_rrl and is in this
+                // category, it must have opcode QUERY and there must be
+                // a question available, so the unwrap is okay.
+                &context.question.as_ref().unwrap().qname
+            };
             let mut qname_hasher = self.random_state.build_hasher();
             qname.hash(&mut qname_hasher);
             qname_hasher.finish() as u32
@@ -373,13 +385,16 @@ impl Rrl {
 
             if entry.count >= limit {
                 if self.should_slip() {
-                    Action::Slip
+                    context.rrl_action = Some(Action::Slip);
+                    context.response.clear_rrs();
+                    context.response.set_tc(true);
                 } else {
-                    Action::Drop
+                    context.rrl_action = Some(Action::Drop);
+                    context.send_response = false;
                 }
             } else {
                 entry.count += 1;
-                Action::Send
+                context.rrl_action = Some(Action::Send);
             }
         } else {
             // There is a hash collision. We forget the old entry.
@@ -388,7 +403,7 @@ impl Rrl {
                 count: 1,
                 last_refill: Instant::now(),
             };
-            Action::Send
+            context.rrl_action = Some(Action::Send);
         }
     }
 
@@ -442,6 +457,14 @@ impl From<Rcode> for Category {
             _ => Self::Error,
         }
     }
+}
+
+/// Determines whether the response being prepared in `context` is
+/// subject to RRL.
+fn subject_to_rrl(context: &Context) -> bool {
+    context.send_response
+        && context.received_info.transport == Transport::Udp
+        && context.received.opcode() == Opcode::Query
 }
 
 ////////////////////////////////////////////////////////////////////////

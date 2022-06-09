@@ -20,9 +20,9 @@
 use std::net::IpAddr;
 
 use crate::message::{writer, Opcode, Question, Rcode, Reader, Writer};
+use crate::name::Name;
+use crate::rr::Type;
 use crate::zone::Zone;
-
-use log::error;
 
 mod query;
 mod rrl;
@@ -31,7 +31,7 @@ use rrl::Rrl;
 pub use rrl::{RrlParamError, RrlParams};
 
 ////////////////////////////////////////////////////////////////////////
-// SERVER PUBLIC API                                                  //
+// SERVER PUBLIC API AND CORE MESSAGE-HANDLING LOGIC                  //
 ////////////////////////////////////////////////////////////////////////
 
 /// An authoritative DNS server, abstracted from any underlying network
@@ -76,7 +76,8 @@ impl Server {
     /// DNS message the caller is willing to send. To comply with the
     /// DNS specification, it should be at least 512 octets long for UDP
     /// transport. For TCP transport, the maximum possible size (65,535
-    /// octets) should be used.
+    /// octets) should be used. If the buffer is not long enough to hold
+    /// a DNS message header, then this method will panic.
     ///
     /// A [`Response`] is returned, signifying whether a response is to
     /// be sent and, if so, how long the response message written into
@@ -87,16 +88,154 @@ impl Server {
         received_info: ReceivedInfo,
         response_buf: &mut [u8],
     ) -> Response {
-        if let Ok(received) = Reader::try_from(received_buf) {
-            // We currently only support standard queries.
-            if received.opcode() == Opcode::Query {
-                self.handle_query(received, received_info, response_buf)
-            } else {
-                generate_error(&received, None, Rcode::NOTIMP, response_buf)
-            }
+        // Construct a Reader, while ignoring messages that do not
+        // contain a full DNS header.
+        let received = match Reader::try_from(received_buf) {
+            Ok(r) => r,
+            Err(_) => return Response::None,
+        };
+
+        // Ignore messages that are responses.
+        if received.qr() {
+            return Response::None;
+        }
+
+        // Start the response by copying information from the received
+        // message and setting the QR bit.
+        let mut response =
+            Writer::try_from(response_buf).expect("failed to start response (buffer too short)");
+        response.set_id(received.id());
+        response.set_qr(true);
+        response.set_opcode(received.opcode());
+        if received.opcode() == Opcode::Query {
+            // Per the ISC DNS compliance testing tool, RD is only
+            // defined for opcode QUERY and thus we shouldn't copy it
+            // otherwise.
+            response.set_rd(received.rd());
+        }
+
+        // We now have our Reader and Writer set up. Next, we create a
+        // Context structure, which holds the Reader/Writer and also
+        // keeps track of other information recorded during the
+        // message-handling process. The handle_message_with_context
+        // method then finishes processing and response creation.
+        let mut context = Context::new(received, received_info, response);
+        self.handle_message_with_context(&mut context);
+
+        // The final step is to apply response rate-limiting (RRL) if
+        // it's enabled.
+        if let Some(ref rrl) = self.rrl {
+            rrl.process_response(&mut context);
+        }
+
+        // Send away (if we should)!
+        if context.send_response {
+            Response::Single(context.response.finish())
         } else {
-            // Ignore messages that do not contain a full DNS header.
             Response::None
+        }
+    }
+
+    /// Handles a received DNS message once a [`Context`] has been
+    /// constructed. This is a continuation of
+    /// [`Server::handle_message`] that performs additional generic
+    /// processing (such as looking for OPT records) before calling into
+    /// opcode-specific processing. At the conclusion of this method,
+    /// the response (if any) has been prepared. Post-processing occurs
+    /// once this returns to [`Server::handle_message`].
+    fn handle_message_with_context<'s>(&'s self, context: &mut Context<'s, '_>) {
+        // Read the question, if any. Note that most current
+        // implementations ignore messages with QDCOUNT > 1, so we'll do
+        // the same.
+        //
+        // If there is a question, add it to the response.
+        context.question = match context.received.qdcount() {
+            0 => None,
+            1 => {
+                if let Ok(question) = context.received.read_question() {
+                    if context.response.add_question(&question).is_err() {
+                        context.response.set_rcode(Rcode::SERVFAIL);
+                        return;
+                    }
+                    Some(question)
+                } else {
+                    context.response.set_rcode(Rcode::FORMERR);
+                    return;
+                }
+            }
+            _ => {
+                context.send_response = false;
+                return;
+            }
+        };
+
+        // DNS servers tend to be lax about allowing random records in
+        // non-response messages, at least for opcode QUERY, and we
+        // haven't come across anything in the RFCs to forbid it. In
+        // fact, RFC 1996 *requires* servers to accept records in the
+        // authority and additional sections of NOTIFY messages in case
+        // future versions of NOTIFY make use of them. So our strategy
+        // is to ignore the RRs that we're not yet concerned with and to
+        // allow opcode-specific handling to deal with them (or, for
+        // e.g. QUERY and NOTIFY, ignore them).
+        //
+        // We do, however, need to skip over them here to process
+        // pseudo-RRs like OPT or TSIG. This raises the question: should
+        // we attempt to parse/decompress them (and return FORMERR if
+        // they are invalid)? This would be nice and fastidious, and
+        // some servers seem to do it. Furthermore, we *may*, for
+        // certain opcodes, need that data later. But on the other hand,
+        // it would be good to avoid pedantically parsing a bunch of
+        // superfluous RRs in a QUERY, for example. We don't want an
+        // attacker slowing us down by feeding us tons of junk records,
+        // or trying to blow up our memory usage by sending lots of
+        // unused RRs with compressed domain names (especially if we're
+        // running on a thread-per-TCP-connection I/O provider).
+        //
+        // So instead, we do the bare minimum necessary: parsing the
+        // first "chunk" of each RR owner (up to the null label or a
+        // pointer label) to find the RDLENGTH field, and then using the
+        // RDLENGTH field to get to the end of the RR. Thus, if there
+        // are superfluous RRs with invalid data, we let it slide. That
+        // seems okay---after all, this is an authoritative server, not
+        // a DNS message validation service!
+
+        // We'll rewind to the beginning of the RRs after we scan them.
+        context.received.mark();
+
+        // Scan all the RRs. Since we don't yet support EDNS, if we see
+        // an OPT record, we respond with FORMERR to comply with
+        // RFC 6891 § 7.
+        let rr_count = context.received.ancount() as usize
+            + context.received.nscount() as usize
+            + context.received.arcount() as usize;
+        for _ in 0..rr_count {
+            let peek = match context.received.peek_rr() {
+                Ok(p) => p,
+                Err(_) => {
+                    context.response.set_rcode(Rcode::FORMERR);
+                    return;
+                }
+            };
+            if peek.rr_type() == Type::OPT {
+                context.response.set_rcode(Rcode::FORMERR);
+                return;
+            } else {
+                peek.skip();
+            }
+        }
+
+        // At this point, we ought to be at the end of the message.
+        if !context.received.at_eom() {
+            context.response.set_rcode(Rcode::FORMERR);
+        }
+        context.received.rewind();
+
+        // With preliminary checks complete, it's time to start the
+        // opcode-specific handling!
+        match context.received.opcode() {
+            Opcode::Query => self.handle_query(context),
+            _ => context.response.set_rcode(Rcode::NOTIMP),
         }
     }
 }
@@ -129,90 +268,38 @@ pub enum Response {
 }
 
 ////////////////////////////////////////////////////////////////////////
-// HELPERS TO PREPARE RESPONSE MESSAGES                               //
+// MESSAGE-HANDLING CONTEXT                                           //
 ////////////////////////////////////////////////////////////////////////
 
-/// Prepares the header of `response` from the header of `received`.
-/// The message ID, RD bit, and opcode are copied from `received`, and
-/// the query response (QR) bit is set.
-fn set_up_response_header(received: &Reader, response: &mut Writer) {
-    response.set_id(received.id());
-    response.set_qr(true);
-    response.set_rd(received.rd());
-    response.set_opcode(received.opcode());
-}
-
-/// Writes an error response with the given RCODE and (optionally)
-/// question into the provided buffer, producing a [`Response`].
-///
-/// This is intended for use early on in processing, when a response
-/// [`Writer`] has not yet been set up.
-fn generate_error(
-    received: &Reader,
-    question: Option<&Question>,
-    rcode: Rcode,
-    response_buf: &mut [u8],
-) -> Response {
-    if let Ok(response_len) = try_generating_error(received, question, rcode, response_buf) {
-        Response::Single(response_len)
-    } else {
-        error!("try_generating_error failed. This is a bug.");
-        Response::None
-    }
-}
-
-/// Attempts to write an error response with the given RCODE and
-/// (optionally) question into the provided buffer.
-fn try_generating_error(
-    received: &Reader,
-    question: Option<&Question>,
-    rcode: Rcode,
-    response_buf: &mut [u8],
-) -> writer::Result<usize> {
-    let mut response = Writer::try_from(response_buf)?;
-    set_up_response_header(received, &mut response);
-    response.set_rcode(rcode);
-    if let Some(question) = question {
-        response.add_question(question)?;
-    }
-    Ok(response.finish())
-}
-
-/// Converts an existing response into a SERVFAIL response.
-fn reconfigure_as_servfail(response: &mut Writer) {
-    // Processing code may have set the AA bit, so we clear it here.
-    response.set_aa(false);
-    response.set_rcode(Rcode::SERVFAIL);
-    response.clear_rrs();
-}
-
-/// Checks `processing_result` and, if it is an error, modifies the
-/// response accordingly.
-///
-/// * If the error is a truncation error and the transport is UDP, the
-///   message's RRs are cleared and the TC bit is set.
-/// * If the error is a truncation error and the transport is TCP,
-///   retrying over TCP won't help. The message is converted into a
-///   SERVFAIL response.
-/// * For all other errors, the message is converted into a SERVFAIL
-///   response.
-fn handle_processing_errors(
-    processing_result: ProcessingResult<()>,
+/// Contains data involved in DNS message-handling. This includes the
+/// received message and the response under construction, as well as
+/// other data set or consumed at different stages of the process.
+struct Context<'s, 'b> {
+    // Information on the received message:
+    received: Reader<'b>,
     received_info: ReceivedInfo,
-    response: &mut Writer,
-) {
-    match processing_result {
-        Ok(()) => (),
-        Err(ProcessingError::ServFail) => reconfigure_as_servfail(response),
-        Err(ProcessingError::Truncation) => {
-            if received_info.transport == Transport::Tcp {
-                // We can't ask the client to retry over TCP, since
-                // we are already over TCP.
-                reconfigure_as_servfail(response);
-            } else {
-                response.clear_rrs();
-                response.set_tc(true);
-            }
+    question: Option<Question>,
+
+    // Data recorded during processing:
+    source_of_synthesis: Option<&'s Name>,
+
+    // Information on the response:
+    response: Writer<'b>,
+    rrl_action: Option<rrl::Action>,
+    send_response: bool,
+}
+
+impl<'s, 'b> Context<'s, 'b> {
+    /// Creates a new `Context`.
+    fn new(received: Reader<'b>, received_info: ReceivedInfo, response: Writer<'b>) -> Self {
+        Self {
+            received,
+            received_info,
+            question: None,
+            source_of_synthesis: None,
+            response,
+            rrl_action: None,
+            send_response: true,
         }
     }
 }

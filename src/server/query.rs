@@ -16,35 +16,22 @@
 
 use arrayvec::ArrayVec;
 
-use super::rrl::Action;
-use super::{
-    generate_error, handle_processing_errors, set_up_response_header, ProcessingError,
-    ProcessingResult, ReceivedInfo, Response, Server, Transport,
-};
+use super::{Context, ProcessingError, ProcessingResult, Server, Transport};
 use crate::class::Class;
-use crate::message::{writer, Qclass, Qtype, Question, Rcode, Reader, Writer};
+use crate::message::{writer, Qclass, Qtype, Rcode, Writer};
 use crate::name::Name;
 use crate::rr::{Rdata, Rrset, RrsetList, Ttl, Type};
 use crate::zone::{LookupAllResult, LookupResult, Zone};
 
 impl Server {
     /// Handles a DNS message with opcode QUERY.
-    pub(super) fn handle_query(
-        &self,
-        mut query: Reader,
-        received_info: ReceivedInfo,
-        response_buf: &mut [u8],
-    ) -> Response {
-        // Read the query.
-        let question = match read_query(&mut query) {
-            Ok(question) => question,
-            Err(maybe_question) => {
-                return generate_error(
-                    &query,
-                    maybe_question.as_ref(),
-                    Rcode::FORMERR,
-                    response_buf,
-                );
+    pub(super) fn handle_query<'s>(&'s self, context: &mut Context<'s, '_>) {
+        // If there is no question, then that's a FORMERR.
+        let question = match context.question {
+            Some(ref q) => q,
+            None => {
+                context.response.set_rcode(Rcode::FORMERR);
+                return;
             }
         };
 
@@ -53,12 +40,14 @@ impl Server {
             question.qtype,
             Qtype::IXFR | Qtype::AXFR | Qtype::MAILB | Qtype::MAILA
         ) {
-            return generate_error(&query, Some(&question), Rcode::NOTIMP, response_buf);
+            context.response.set_rcode(Rcode::NOTIMP);
+            return;
         }
 
         // We do not support QCLASS * (ANY).
         if question.qclass == Qclass::ANY {
-            return generate_error(&query, Some(&question), Rcode::NOTIMP, response_buf);
+            context.response.set_rcode(Rcode::NOTIMP);
+            return;
         }
 
         // When we support multiple zones, here is where we will find
@@ -68,96 +57,41 @@ impl Server {
         // it turns out (after calling the Zone lookup methods) that the
         // QNAME is not part of the single zone we serve.
         if Class::from(question.qclass) != self.zone.class() {
-            return generate_error(&query, Some(&question), Rcode::REFUSED, response_buf);
+            context.response.set_rcode(Rcode::REFUSED);
+            return;
         }
 
-        match self.handle_non_axfr_query(&self.zone, query, question, received_info, response_buf) {
-            Some(response_len) => Response::Single(response_len),
-            None => Response::None,
-        }
+        self.handle_non_axfr_query(&self.zone, context);
     }
 
-    /// Handles a non-AXFR DNS query. Returns the length of the DNS
-    /// response written into `response_buf` or `None` if no response
-    /// should be sent.
-    fn handle_non_axfr_query<'a>(
-        &self,
-        zone: &Zone,
-        query: Reader,
-        question: Question,
-        received_info: ReceivedInfo,
-        response_buf: &'a mut [u8],
-    ) -> Option<usize> {
-        let mut response = Writer::try_from(response_buf).ok()?;
-        set_up_response_header(&query, &mut response);
-        response.add_question(&question).ok()?;
-
-        let mut source_of_synthesis = None;
+    /// Handles a non-AXFR DNS query.
+    fn handle_non_axfr_query<'s, 'c>(&'s self, zone: &'s Zone, context: &'c mut Context<'s, '_>) {
+        let question = context.question.as_ref().unwrap();
         let result = if question.qtype == Qtype::ANY {
-            answer_any(
-                zone,
-                &question.qname,
-                &mut response,
-                &mut source_of_synthesis,
-            )
+            answer_any(zone, context)
         } else {
-            answer(
-                zone,
-                &question.qname,
-                Type::from(question.qtype),
-                &mut response,
-                &mut source_of_synthesis,
-            )
+            answer(zone, context)
         };
-        handle_processing_errors(result, received_info, &mut response);
 
-        // Completed query responses are subject to rate-limiting if
-        // it's enabled and if the transport is UDP.
-        if let Some(ref rrl) = self.rrl {
-            if received_info.transport == Transport::Udp {
-                let qname = source_of_synthesis.unwrap_or(&question.qname);
-                match rrl.process_response(received_info.source, qname, response.rcode()) {
-                    Action::Send => Some(response.finish()),
-                    Action::Slip => {
-                        response.clear_rrs();
-                        response.set_tc(true);
-                        Some(response.finish())
-                    }
-                    Action::Drop => None,
-                }
-            } else {
-                // The transport is not UDP.
-                Some(response.finish())
+        match result {
+            Ok(()) => (),
+            Err(ProcessingError::ServFail) => {
+                context.response.set_aa(false);
+                context.response.set_rcode(Rcode::SERVFAIL);
+                context.response.clear_rrs();
             }
-        } else {
-            // Rate-limiting is disabled.
-            Some(response.finish())
+            Err(ProcessingError::Truncation) => {
+                context.response.clear_rrs();
+                if context.received_info.transport == Transport::Tcp {
+                    // We can't ask the client to retry over TCP, since
+                    // we are already over TCP.
+                    context.response.set_aa(false);
+                    context.response.set_rcode(Rcode::SERVFAIL);
+                } else {
+                    context.response.set_tc(true);
+                }
+            }
         }
-    }
-}
-
-////////////////////////////////////////////////////////////////////////
-// QUERY VALIDATION                                                   //
-////////////////////////////////////////////////////////////////////////
-
-/// Reads a query and returns its question. On error, the question is
-/// returned only if it could be read.
-fn read_query(query: &mut Reader) -> Result<Question, Option<Question>> {
-    if query.qdcount() != 1 {
-        Err(None)
-    } else if let Ok(question) = query.read_question() {
-        if query.qr()
-            || query.tc()
-            || query.ancount() > 0
-            || query.nscount() > 0
-            || query.arcount() > 0
-        {
-            Err(Some(question))
-        } else {
-            Ok(question)
-        }
-    } else {
-        Err(None)
     }
 }
 
@@ -167,39 +101,40 @@ fn read_query(query: &mut Reader) -> Result<Question, Option<Question>> {
 
 /// Answers a query for a specific RR type once the appropriate zone to
 /// search has been determined.
-fn answer<'z>(
-    zone: &'z Zone,
-    qname: &Name,
-    rr_type: Type,
-    response: &mut Writer,
-    source_of_synthesis: &mut Option<&'z Name>,
-) -> ProcessingResult<()> {
+fn answer<'s>(zone: &'s Zone, context: &mut Context<'s, '_>) -> ProcessingResult<()> {
+    let question = context.question.as_ref().unwrap();
+    let qname = &question.qname;
+    let rr_type = question.qtype.into();
+
     match zone.lookup(qname, rr_type) {
         LookupResult::Found(found) => {
-            *source_of_synthesis = found.source_of_synthesis;
-            response.set_aa(true);
-            response.add_answer_rrset(qname, found.rrset)?;
-            do_additional_section_processing(zone, found.rrset, response)
+            context.source_of_synthesis = found.source_of_synthesis;
+            context.response.set_aa(true);
+            context.response.add_answer_rrset(qname, found.rrset)?;
+            do_additional_section_processing(zone, found.rrset, &mut context.response)
         }
         LookupResult::Cname(cname) => {
-            *source_of_synthesis = cname.source_of_synthesis;
-            do_cname(zone, qname, cname.rrset, rr_type, response)
+            context.source_of_synthesis = cname.source_of_synthesis;
+            do_cname(zone, qname, cname.rrset, rr_type, &mut context.response)
         }
-        LookupResult::Referral(referral) => {
-            do_referral(zone, referral.child_zone, referral.ns_rrset, response)
-        }
+        LookupResult::Referral(referral) => do_referral(
+            zone,
+            referral.child_zone,
+            referral.ns_rrset,
+            &mut context.response,
+        ),
         LookupResult::NoRecords(no_records) => {
-            *source_of_synthesis = no_records.source_of_synthesis;
-            response.set_aa(true);
-            add_negative_caching_soa(zone, response)
+            context.source_of_synthesis = no_records.source_of_synthesis;
+            context.response.set_aa(true);
+            add_negative_caching_soa(zone, &mut context.response)
         }
         LookupResult::NxDomain => {
-            response.set_rcode(Rcode::NXDOMAIN);
-            response.set_aa(true);
-            add_negative_caching_soa(zone, response)
+            context.response.set_rcode(Rcode::NXDOMAIN);
+            context.response.set_aa(true);
+            add_negative_caching_soa(zone, &mut context.response)
         }
         LookupResult::WrongZone => {
-            response.set_rcode(Rcode::REFUSED);
+            context.response.set_rcode(Rcode::REFUSED);
             Ok(())
         }
     }
@@ -207,36 +142,37 @@ fn answer<'z>(
 
 /// Answers a query with QTYPE * (ANY) once the appropriate zone to
 /// search has been determined.
-fn answer_any<'z>(
-    zone: &'z Zone,
-    qname: &Name,
-    response: &mut Writer,
-    source_of_synthesis: &mut Option<&'z Name>,
-) -> ProcessingResult<()> {
+fn answer_any<'s>(zone: &'s Zone, context: &mut Context<'s, '_>) -> ProcessingResult<()> {
+    let question = context.question.as_ref().unwrap();
+    let qname = &question.qname;
+
     match zone.lookup_all(qname) {
         LookupAllResult::Found(found) => {
-            *source_of_synthesis = found.source_of_synthesis;
-            response.set_aa(true);
+            context.source_of_synthesis = found.source_of_synthesis;
+            context.response.set_aa(true);
             let mut n_added = 0;
             for rrset in found.rrsets.iter() {
-                response.add_answer_rrset(qname, rrset)?;
+                context.response.add_answer_rrset(qname, rrset)?;
                 n_added += 1;
             }
             if n_added == 0 {
-                add_negative_caching_soa(zone, response)?;
+                add_negative_caching_soa(zone, &mut context.response)?;
             }
             Ok(())
         }
-        LookupAllResult::Referral(referral) => {
-            do_referral(zone, referral.child_zone, referral.ns_rrset, response)
-        }
+        LookupAllResult::Referral(referral) => do_referral(
+            zone,
+            referral.child_zone,
+            referral.ns_rrset,
+            &mut context.response,
+        ),
         LookupAllResult::NxDomain => {
-            response.set_rcode(Rcode::NXDOMAIN);
-            response.set_aa(true);
-            add_negative_caching_soa(zone, response)
+            context.response.set_rcode(Rcode::NXDOMAIN);
+            context.response.set_aa(true);
+            add_negative_caching_soa(zone, &mut context.response)
         }
         LookupAllResult::WrongZone => {
-            response.set_rcode(Rcode::REFUSED);
+            context.response.set_rcode(Rcode::REFUSED);
             Ok(())
         }
     }
