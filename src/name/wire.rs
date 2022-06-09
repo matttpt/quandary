@@ -206,6 +206,53 @@ fn parse_pointer(octets: &[u8], chunk_start: usize, index: usize) -> Result<u16,
 }
 
 ////////////////////////////////////////////////////////////////////////
+// SKIPPING OF COMPRESSED ON-THE-WIRE NAMES                           //
+////////////////////////////////////////////////////////////////////////
+
+/// Skips a compressed name starting at the beginning of `octets`; this
+/// is the implementation of [`Name::skip_compressed`].
+pub fn skip_compressed_name(octets: &[u8]) -> Result<usize, Error> {
+    // min_uncompressed_and_chunk_lens, when set, has two fields:
+    //
+    // 1. the lower bound for the on-the-wire length of the name when
+    //    uncompressed, given what we saw in the first chunk; and
+    // 2. the length of the first chunk.
+    //
+    // This is important to keep track of, because they differ by one
+    // when the first chunk ends with a pointer label.
+    let mut offset = 0;
+    let mut min_uncompressed_and_chunk_lens = None;
+
+    while offset < octets.len() {
+        let label_len = octets[offset];
+        if label_len & 0xc0 == 0xc0 {
+            min_uncompressed_and_chunk_lens = Some((offset + 1, offset + 2));
+            break;
+        } else if label_len > (MAX_LABEL_LEN as u8) {
+            return Err(Error::LabelTooLong);
+        } else if label_len == 0 {
+            min_uncompressed_and_chunk_lens = Some((offset + 1, offset + 1));
+            break;
+        } else {
+            offset += 1 + label_len as usize;
+        }
+        if offset > MAX_WIRE_LEN {
+            return Err(Error::NameTooLong);
+        }
+    }
+
+    if let Some((min_uncompressed_len, chunk_len)) = min_uncompressed_and_chunk_lens {
+        if min_uncompressed_len > MAX_WIRE_LEN {
+            Err(Error::NameTooLong)
+        } else {
+            Ok(chunk_len)
+        }
+    } else {
+        Err(Error::UnexpectedEom)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////
 // TESTS                                                              //
 ////////////////////////////////////////////////////////////////////////
 
@@ -437,5 +484,59 @@ mod tests {
             parse_compressed_name(b"\x01x\xc0\x08junk\x00", 0),
             Err(Error::InvalidPointer),
         );
+    }
+
+    ////////////////////////////////////////////////////////////////////
+    // TESTS FOR skip_compressed_name                                 //
+    ////////////////////////////////////////////////////////////////////
+
+    /// A shim to use some of the uncompressed tests for
+    /// `skip_compressed_name`.
+    fn skip_compressed_name_shim(octets: &[u8], _use_all: bool) -> Result<usize, Error> {
+        skip_compressed_name(octets)
+    }
+
+    #[test]
+    fn skip_compressed_name_accepts_valid_uncompressed_names() {
+        let wire_repr_and_junk = b"\x07example\x04test\x00junk";
+        assert_eq!(skip_compressed_name(wire_repr_and_junk), Ok(14));
+    }
+
+    #[test]
+    fn skip_compressed_name_accepts_valid_compressed_first_chunks() {
+        let wire_repr_and_junk = b"\x07example\xc0\x0cjunk";
+        assert_eq!(skip_compressed_name(wire_repr_and_junk), Ok(10));
+    }
+
+    #[test]
+    fn skip_compressed_name_accepts_almost_too_long_first_chunk() {
+        // The issue in this example is that the *first chunk length* is
+        // one greater than MAX_WIRE_LEN, but if the pointer label
+        // turned out to point to a single null label, then the
+        // uncompressed name would have on-the-wire length MAX_WIRE_LEN.
+        // Thus skip_compressed_name must accept it. (It's easy to get
+        // this wrong!)
+        let mut wire_repr = Vec::new();
+        for _ in 0..MAX_N_LABELS - 1 {
+            wire_repr.extend_from_slice(b"\x01x");
+        }
+        wire_repr.extend_from_slice(b"\xc0\x0c");
+        assert_eq!(wire_repr.len(), MAX_WIRE_LEN + 1);
+        assert_eq!(skip_compressed_name(&wire_repr), Ok(MAX_WIRE_LEN + 1));
+    }
+
+    #[test]
+    fn skip_compressed_name_rejects_long_label() {
+        rejects_long_label_impl(skip_compressed_name_shim);
+    }
+
+    #[test]
+    fn skip_compressed_name_rejects_long_name() {
+        rejects_long_name_impl(skip_compressed_name_shim);
+    }
+
+    #[test]
+    fn skip_compressed_name_rejects_unexpected_eom() {
+        rejects_unexpected_eom_impl(skip_compressed_name_shim);
     }
 }

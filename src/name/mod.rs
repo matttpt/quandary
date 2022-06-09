@@ -267,6 +267,19 @@ impl Name {
         }
     }
 
+    /// Tries to skip a compressed name at the beginning of `octets`.
+    /// This continues until the end of the name or the first pointer
+    /// label, whichever comes first, and returns the number of octets
+    /// read.
+    ///
+    /// This performs validation only on the portion of the name read.
+    /// Furthermore, when this terminates at a pointer, it does *not*
+    /// check whether the pointer itself is valid (i.e., points
+    /// backward).
+    pub fn skip_compressed(octets: &[u8]) -> Result<usize, Error> {
+        wire::skip_compressed_name(octets)
+    }
+
     /// Returns the superdomain obtained by skipping the first `skip`
     /// labels of the `Name`, or `None` if there aren't enough labels.
     pub fn superdomain(&self, skip: usize) -> Option<Box<Name>> {
