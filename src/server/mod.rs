@@ -102,8 +102,12 @@ impl Server {
 
         // Start the response by copying information from the received
         // message and setting the QR bit.
-        let mut response =
-            Writer::try_from(response_buf).expect("failed to start response (buffer too short)");
+        let response_size_limit = match received_info.transport {
+            Transport::Tcp => u16::MAX as usize,
+            Transport::Udp => 512,
+        };
+        let mut response = Writer::new(response_buf, response_size_limit)
+            .expect("failed to start response (buffer too short)");
         response.set_id(received.id());
         response.set_qr(true);
         response.set_opcode(received.opcode());

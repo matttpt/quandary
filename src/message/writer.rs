@@ -29,10 +29,12 @@ use crate::rr::{Rdata, Rrset, Ttl, Type};
 
 /// A "frame" around a buffer that serializes a DNS message into it.
 ///
-/// A `Writer` is constructed using its [`TryFrom`] implementation. Any
-/// underlying buffer for a `Writer` must have space for at least a
-/// full DNS message header of 12 octets; otherwise the construction
-/// will fail. The message header is initially zeroed.
+/// A `Writer` is constructed using [`Writer::new`] (to set an initial
+/// message size limit different from the underlying buffer size) or
+/// with its [`TryFrom`] implementation (which sets the message size
+/// limit equal to the buffer length). The underlying buffer and initial
+/// message size limit must be long enough to accomodate a full DNS
+/// message header of 12 octets. The message header is initially zeroed.
 ///
 /// Since header information is in a fixed position, it can be written
 /// at any time through the appropriate `Writer` methods. For
@@ -54,6 +56,8 @@ use crate::rr::{Rdata, Rrset, Ttl, Type};
 /// methods out of order will fail with [`Error::OutOfOrder`].
 pub struct Writer<'a> {
     octets: &'a mut [u8],
+    limit: usize,
+    available: usize,
     cursor: usize,
     rr_start: usize,
     section: Section,
@@ -73,7 +77,47 @@ enum Section {
     Additional,
 }
 
-impl Writer<'_> {
+impl<'a> Writer<'a> {
+    /// Creates a new `Writer` from the underlying buffer `octets`. The
+    /// message size is initially limited to `limit` or `octets.len()`
+    /// (whichever is smaller). If the smaller limit is too small to
+    /// hold a full DNS message header of 12 octets, then this will
+    /// fail.
+    pub fn new(octets: &'a mut [u8], limit: usize) -> Result<Self> {
+        let limit = limit.min(octets.len());
+        if limit < HEADER_SIZE {
+            Err(Error::Truncation)
+        } else {
+            octets[0..HEADER_SIZE].fill(0);
+            Ok(Self {
+                octets,
+                limit,
+                available: limit,
+                cursor: HEADER_SIZE,
+                rr_start: HEADER_SIZE,
+                section: Section::Question,
+                qdcount: 0,
+                ancount: 0,
+                nscount: 0,
+                arcount: 0,
+            })
+        }
+    }
+
+    /// Increases the size limit for the message to `limit`. If `limit`
+    /// is less than or equal to the current message size limit, then
+    /// nothing is done. If `limit` is greater than the size of the
+    /// underlying buffer, then the size limit is set to the underlying
+    /// buffer's size.
+    pub fn increase_limit(&mut self, new_limit: usize) {
+        if new_limit > self.limit {
+            let new_limit = new_limit.min(self.octets.len());
+            let increase = new_limit - self.limit;
+            self.limit = new_limit;
+            self.available += increase;
+        }
+    }
+
     /// Returns the current 16-bit ID of the message.
     pub fn id(&self) -> u16 {
         u16::from_be_bytes(self.octets[ID_START..ID_END].try_into().unwrap())
@@ -417,7 +461,7 @@ impl Writer<'_> {
     /// Tries to write `data` to the underlying buffer at the current
     /// cursor, failing if there is not sufficient space.
     fn try_push(&mut self, data: &[u8]) -> Result<()> {
-        if self.octets.len() - self.cursor >= data.len() {
+        if self.available - self.cursor >= data.len() {
             self.write(self.cursor, data);
             self.cursor += data.len();
             Ok(())
@@ -455,21 +499,7 @@ impl<'a> TryFrom<&'a mut [u8]> for Writer<'a> {
     type Error = Error;
 
     fn try_from(octets: &'a mut [u8]) -> Result<Self> {
-        if octets.len() < HEADER_SIZE {
-            Err(Error::Truncation)
-        } else {
-            octets[0..HEADER_SIZE].fill(0);
-            Ok(Self {
-                octets,
-                cursor: HEADER_SIZE,
-                rr_start: HEADER_SIZE,
-                section: Section::Question,
-                qdcount: 0,
-                ancount: 0,
-                nscount: 0,
-                arcount: 0,
-            })
-        }
+        Self::new(octets, octets.len())
     }
 }
 
@@ -723,13 +753,44 @@ mod tests {
     }
 
     #[test]
-    fn writer_constructor_rejects_short_buffer() {
+    fn writer_constructors_reject_short_buffers() {
+        let mut big_buf = [0; 512];
         for size in 0..HEADER_SIZE {
-            let mut buf = vec![0; size];
+            let mut exact_buf = vec![0; size];
             assert!(matches!(
-                Writer::try_from(buf.as_mut_slice()),
-                Err(Error::Truncation)
+                Writer::new(big_buf.as_mut_slice(), size),
+                Err(Error::Truncation),
+            ));
+            assert!(matches!(
+                Writer::try_from(exact_buf.as_mut_slice()),
+                Err(Error::Truncation),
             ));
         }
+    }
+
+    #[test]
+    fn increase_limit_works() {
+        let mut buf = [0; 1024];
+        let mut writer = Writer::new(buf.as_mut_slice(), 512).unwrap();
+        writer.available = 256;
+        writer.increase_limit(768);
+        assert_eq!(writer.limit, 768);
+        assert_eq!(writer.available, 512);
+    }
+
+    #[test]
+    fn increase_limit_does_not_decrease_it() {
+        let mut buf = [0; 1024];
+        let mut writer = Writer::new(buf.as_mut_slice(), 512).unwrap();
+        writer.increase_limit(256);
+        assert_eq!(writer.limit, 512);
+    }
+
+    #[test]
+    fn increase_limit_caps_at_buffer_len() {
+        let mut buf = [0; 1024];
+        let mut writer = Writer::new(buf.as_mut_slice(), 512).unwrap();
+        writer.increase_limit(2048);
+        assert_eq!(writer.limit, 1024);
     }
 }
