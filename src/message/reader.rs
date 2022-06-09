@@ -160,7 +160,7 @@ impl<'a> Reader<'a> {
         let ttl = read_u32(&self.octets[owner_end + 4..])?.into();
         let rdlength = read_u16(&self.octets[owner_end + 8..])?;
         let rdata = Rdata::read(rr_type, self.octets, self.cursor + owner_len + 10, rdlength)?;
-        self.cursor += owner_len + 10 + rdlength as usize;
+        self.cursor = owner_end + 10 + rdlength as usize;
         Ok(ReadRr {
             owner,
             rr_type,
@@ -168,6 +168,50 @@ impl<'a> Reader<'a> {
             ttl,
             rdata,
         })
+    }
+
+    /// Skips a resource record at the current cursor.
+    ///
+    /// Note that the resource record is not fully validated. If the
+    /// owner name is compressed, it is checked only until the first
+    /// pointer label. Furthermore, the RDATA length is checked, but the
+    /// RDATA content itself is not validated.
+    pub fn skip_rr(&mut self) -> Result<()> {
+        let owner_len =
+            Name::skip_compressed(&self.octets[self.cursor..]).map_err(Error::InvalidOwner)?;
+        let owner_end = self.cursor + owner_len;
+        let rdlength = read_u16(&self.octets[owner_end + 8..])?;
+        let rr_end = owner_end + 10 + rdlength as usize;
+        if rr_end > self.octets.len() {
+            Err(Error::InvalidRdata(ReadRdataError::UnexpectedEom))
+        } else {
+            self.cursor = rr_end;
+            Ok(())
+        }
+    }
+
+    /// Peeks at a resource record at the current cursor.
+    ///
+    /// This returns a [`PeekRr`] structure that allows one to inspect
+    /// certain fields of the RR without fully parsing/decompressing it.
+    /// Note that the RR is not fully validated; this method performs
+    /// the same checks as [`Reader::skip_rr`].
+    pub fn peek_rr<'r>(&'r mut self) -> Result<PeekRr<'r, 'a>> {
+        let owner_len =
+            Name::skip_compressed(&self.octets[self.cursor..]).map_err(Error::InvalidOwner)?;
+        let owner_end = self.cursor + owner_len;
+        let rdlength = read_u16(&self.octets[owner_end + 8..])?;
+        let rr_end = owner_end + 10 + rdlength as usize;
+        if rr_end > self.octets.len() {
+            Err(Error::InvalidRdata(ReadRdataError::UnexpectedEom))
+        } else {
+            Ok(PeekRr {
+                reader: self,
+                owner: None,
+                owner_end,
+                rr_end,
+            })
+        }
     }
 
     /// Returns whether the `Reader`'s cursor has reached the end of the
@@ -210,6 +254,127 @@ impl fmt::Debug for Reader<'_> {
             .field("arcount", &self.arcount())
             .field("cursor", &self.cursor)
             .finish()
+    }
+}
+
+////////////////////////////////////////////////////////////////////////
+// RECORD-PEEKING IMPLEMENTATION                                      //
+////////////////////////////////////////////////////////////////////////
+
+/// Gives a peek at a resource record's fields without completely
+/// parsing/decompressing it.
+///
+/// Using [`Reader::peek_rr`] and this type, one can quickly scan for
+/// RRs of interest before parsing/decompressing their owner domain
+/// names and RDATA (and dynamically allocating space for them). The
+/// fixed-size fields can be accessed through their respective methods,
+/// and the owner domain name can be parsed on demand with
+/// [`PeekRr::owner`].
+///
+/// After inspecting an RR, one may drop the [`PeekRr`], leaving the
+/// parent [`Reader`]'s state unchanged; call [`PeekRr::skip`] to
+/// advance the parent [`Reader`] to the end of the RR without parsing
+/// it; or [`PeekRr::parse`] to fully parse the record's owner and
+/// RDATA.
+pub struct PeekRr<'r, 'b> {
+    reader: &'r mut Reader<'b>,
+    owner: Option<Box<Name>>,
+    owner_end: usize,
+    rr_end: usize,
+}
+
+impl<'r, 'b> PeekRr<'r, 'b> {
+    /// Returns the owner of the resource record. It is parsed when this
+    /// method is first called; subsequent calls return a reference to
+    /// the same [`Name`].
+    pub fn owner(&mut self) -> Result<&Name> {
+        if let Some(ref owner) = self.owner {
+            Ok(owner)
+        } else {
+            Ok(self.owner.insert(self.parse_owner()?))
+        }
+    }
+
+    /// Parses the resource record's owner.
+    fn parse_owner(&self) -> Result<Box<Name>> {
+        Name::try_from_compressed(self.reader.octets, self.reader.cursor)
+            .map(|(owner, _)| owner)
+            .map_err(Error::InvalidOwner)
+    }
+
+    /// Removes and returns the name from the owner field if it has
+    /// already been parsed; otherwise, parses the owner.
+    fn take_owner(&mut self) -> Result<Box<Name>> {
+        if let Some(owner) = self.owner.take() {
+            Ok(owner)
+        } else {
+            self.parse_owner()
+        }
+    }
+
+    /// Returns the resource record's type.
+    pub fn rr_type(&self) -> Type {
+        Type::from(u16::from_be_bytes(
+            self.reader.octets[self.owner_end..self.owner_end + 2]
+                .try_into()
+                .unwrap(),
+        ))
+    }
+
+    /// Returns the resource record's class.
+    pub fn class(&self) -> Class {
+        Class::from(u16::from_be_bytes(
+            self.reader.octets[self.owner_end + 2..self.owner_end + 4]
+                .try_into()
+                .unwrap(),
+        ))
+    }
+
+    /// Returns the resource record's time-to-live.
+    pub fn ttl(&self) -> Ttl {
+        Ttl::from(u32::from_be_bytes(
+            self.reader.octets[self.owner_end + 4..self.owner_end + 8]
+                .try_into()
+                .unwrap(),
+        ))
+    }
+
+    /// Returns the resource record's RDLENGTH field.
+    pub fn rdlength(&self) -> u16 {
+        u16::from_be_bytes(
+            self.reader.octets[self.owner_end + 8..self.owner_end + 10]
+                .try_into()
+                .unwrap(),
+        )
+    }
+
+    /// Advances the parent [`Reader`] to the end of the resource record
+    /// without parsing the record.
+    pub fn skip(mut self) {
+        self.reader.cursor = self.rr_end;
+    }
+
+    /// Parses the resource record and advances the parent [`Reader`] to
+    /// its end.
+    ///
+    /// Like [`Reader::read_rr`], this method is atomic, in that the
+    /// parent [`Reader`]'s cursor is not advanced on failure.
+    pub fn parse(mut self) -> Result<ReadRr<'b>> {
+        let owner = self.take_owner()?;
+        let rdata = Rdata::read(
+            self.rr_type(),
+            self.reader.octets,
+            self.owner_end + 10,
+            self.rdlength(),
+        )?;
+        self.reader.cursor = self.rr_end;
+        Ok(ReadRr {
+            owner,
+            rr_type: self.rr_type(),
+            class: self.class(),
+            ttl: self.ttl(),
+            rdata,
+        })
     }
 }
 
@@ -300,6 +465,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
 mod tests {
+    use lazy_static::lazy_static;
+
     use super::super::{Qclass, Qtype};
     use super::*;
 
@@ -313,14 +480,15 @@ mod tests {
           \x02\x00\x01\x00\x01\x50\xa2\x00\x04\x01\x62\xc0\x2b\x00\x00\x29\
           \x10\x00\x00\x00\x00\x00\x00\x00";
 
+    lazy_static! {
+        static ref EXAMPLE_COM: Box<Name> = "example.com.".parse().unwrap();
+        static ref A_IANA_SERVERS_NET: Box<Name> = "a.iana-servers.net.".parse().unwrap();
+        static ref B_IANA_SERVERS_NET: Box<Name> = "b.iana-servers.net.".parse().unwrap();
+    }
+
     #[test]
     fn reader_works() {
         let mut reader = Reader::try_from(EXAMPLE_COM_NS_MESSAGE).unwrap();
-        let expected_qname = "example.com.".parse().unwrap();
-        let expected_qtype = Qtype::from(Type::NS);
-        let expected_qclass = Qclass::from(Class::IN);
-        let expected_ns_a: Box<Name> = "a.iana-servers.net.".parse().unwrap();
-        let expected_ns_b: Box<Name> = "b.iana-servers.net.".parse().unwrap();
 
         // Check the header.
         assert_eq!(reader.id(), 0xe2d7);
@@ -338,23 +506,23 @@ mod tests {
 
         // Check the question.
         let question = reader.read_question().unwrap();
-        assert_eq!(question.qname, expected_qname);
-        assert_eq!(question.qtype, expected_qtype);
-        assert_eq!(question.qclass, expected_qclass);
+        assert_eq!(question.qname, *EXAMPLE_COM);
+        assert_eq!(question.qtype, Qtype::from(Type::NS));
+        assert_eq!(question.qclass, Qclass::from(Class::IN));
 
         // Check the answers.
         let answer_1 = reader.read_rr().unwrap();
-        assert_eq!(answer_1.owner, expected_qname);
+        assert_eq!(answer_1.owner, *EXAMPLE_COM);
         assert_eq!(answer_1.rr_type, Type::NS);
         assert_eq!(answer_1.class, Class::IN);
         assert_eq!(answer_1.ttl, Ttl::from(86178));
-        assert_eq!(answer_1.rdata.octets(), expected_ns_a.wire_repr());
+        assert_eq!(answer_1.rdata.octets(), A_IANA_SERVERS_NET.wire_repr());
         let answer_2 = reader.read_rr().unwrap();
-        assert_eq!(answer_2.owner, expected_qname);
+        assert_eq!(answer_2.owner, *EXAMPLE_COM);
         assert_eq!(answer_2.rr_type, Type::NS);
         assert_eq!(answer_2.class, Class::IN);
         assert_eq!(answer_2.ttl, Ttl::from(86178));
-        assert_eq!(answer_2.rdata.octets(), expected_ns_b.wire_repr());
+        assert_eq!(answer_2.rdata.octets(), B_IANA_SERVERS_NET.wire_repr());
 
         // Check the OPT record.
         let opt = reader.read_rr().unwrap();
@@ -376,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn mark_and_rewind_work() {
+    fn reader_mark_and_rewind_work() {
         let mut reader = Reader::try_from(EXAMPLE_COM_NS_MESSAGE).unwrap();
         reader.mark();
         let question_the_first_time = reader.read_question().unwrap();
@@ -388,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn rewind_unsets_mark() {
+    fn reader_rewind_unsets_mark() {
         let mut reader = Reader::try_from(EXAMPLE_COM_NS_MESSAGE).unwrap();
         reader.mark();
         assert!(reader.mark.is_some());
@@ -398,8 +566,47 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "Reader rewound with no mark set")]
-    fn rewind_panics_when_no_mark_is_set() {
+    fn reader_rewind_panics_when_no_mark_is_set() {
         let mut reader = Reader::try_from(EXAMPLE_COM_NS_MESSAGE).unwrap();
         reader.rewind();
+    }
+
+    #[test]
+    fn reader_skip_rr_works() {
+        let mut reader = Reader::try_from(EXAMPLE_COM_NS_MESSAGE).unwrap();
+        reader.read_question().unwrap();
+        reader.skip_rr().unwrap();
+        assert_eq!(reader.cursor, 61);
+    }
+
+    #[test]
+    fn peek_rr_owner_works() {
+        let mut reader = Reader::try_from(EXAMPLE_COM_NS_MESSAGE).unwrap();
+        reader.read_question().unwrap();
+        let mut peek_rr = reader.peek_rr().unwrap();
+        assert_eq!(peek_rr.owner(), Ok(EXAMPLE_COM.as_ref()));
+    }
+
+    #[test]
+    fn peek_rr_skip_works() {
+        let mut reader = Reader::try_from(EXAMPLE_COM_NS_MESSAGE).unwrap();
+        reader.read_question().unwrap();
+        let peek_rr = reader.peek_rr().unwrap();
+        peek_rr.skip();
+        assert_eq!(reader.cursor, 61);
+    }
+
+    #[test]
+    fn peek_rr_parse_works() {
+        let mut reader = Reader::try_from(EXAMPLE_COM_NS_MESSAGE).unwrap();
+        reader.read_question().unwrap();
+        let peek_rr = reader.peek_rr().unwrap();
+        let answer = peek_rr.parse().unwrap();
+        assert_eq!(reader.cursor, 61);
+        assert_eq!(answer.owner, *EXAMPLE_COM);
+        assert_eq!(answer.rr_type, Type::NS);
+        assert_eq!(answer.class, Class::IN);
+        assert_eq!(answer.ttl, Ttl::from(86178));
+        assert_eq!(answer.rdata.octets(), A_IANA_SERVERS_NET.wire_repr());
     }
 }
