@@ -18,7 +18,7 @@
 use std::fmt;
 
 use super::constants::*;
-use super::{Opcode, Question, Rcode};
+use super::{ExtendedRcode, Opcode, Question, Rcode};
 use crate::class::Class;
 use crate::name::Name;
 use crate::rr::{Rdata, Rrset, Ttl, Type};
@@ -54,6 +54,10 @@ use crate::rr::{Rdata, Rrset, Ttl, Type};
 /// To ensure this, the [`Writer`] keeps track of the section of the DNS
 /// message body it is currently writing. Attempts to use the above
 /// methods out of order will fail with [`Error::OutOfOrder`].
+///
+/// For EDNS messages, use [`Writer::set_edns`]. Space for an OPT record
+/// will be reserved, and the OPT record will be automatically added to
+/// the message when [`Writer::finish`] is called.
 pub struct Writer<'a> {
     octets: &'a mut [u8],
     limit: usize,
@@ -65,6 +69,7 @@ pub struct Writer<'a> {
     ancount: u16,
     nscount: u16,
     arcount: u16,
+    edns: Option<Edns>,
 }
 
 /// A type for recording which section of a DNS message a [`Writer`] is
@@ -76,6 +81,18 @@ enum Section {
     Authority,
     Additional,
 }
+
+/// A type for recording EDNS information for a message until it is
+/// serialized in [Writer::finish].
+struct Edns {
+    udp_payload_size: u16,
+    extended_rcode_upper_bits: u8,
+}
+
+/// The amount of space we need to reserve for the OPT record. (Since we
+/// don't use any EDNS options right now, the OPT record is a fixed
+/// size.)
+const OPT_RECORD_SIZE: usize = 11;
 
 impl<'a> Writer<'a> {
     /// Creates a new `Writer` from the underlying buffer `octets`. The
@@ -100,6 +117,7 @@ impl<'a> Writer<'a> {
                 ancount: 0,
                 nscount: 0,
                 arcount: 0,
+                edns: None,
             })
         }
     }
@@ -210,16 +228,52 @@ impl<'a> Writer<'a> {
         }
     }
 
-    /// Returns the message's current RCODE.
+    /// Returns the message's current RCODE. Note that if EDNS may be in
+    /// use, one should use [`Writer::extended_rcode`] instead.
     pub fn rcode(&self) -> Rcode {
         let raw = self.octets[RCODE_BYTE] & RCODE_MASK;
         raw.try_into().unwrap()
     }
 
-    /// Sets the message's RCODE.
+    /// Sets the message's RCODE. In an EDNS message, this clears the
+    /// 8-bit extension of the RCODE in the OPT TTL field.
     pub fn set_rcode(&mut self, rcode: Rcode) {
         self.octets[RCODE_BYTE] &= !RCODE_MASK;
         self.octets[RCODE_BYTE] |= u8::from(rcode);
+        if let Some(ref mut edns) = self.edns {
+            edns.extended_rcode_upper_bits = 0;
+        }
+    }
+
+    /// Returns the message's extended RCODE. If EDNS is not in use,
+    /// then this is just the RCODE.
+    pub fn extended_rcode(&self) -> ExtendedRcode {
+        let lower_four = (self.octets[RCODE_BYTE] & RCODE_MASK) as u16;
+        if let Some(ref edns) = self.edns {
+            let raw = ((edns.extended_rcode_upper_bits as u16) << 4) | lower_four;
+            raw.into()
+        } else {
+            lower_four.into()
+        }
+    }
+
+    /// Sets the message's extended RCODE. This will fail is EDNS is not
+    /// in use, or if the value is greater than 4,095 (since OPT records
+    /// can only express extended RCODEs that fit in 12 bits).
+    pub fn set_extended_rcode(&mut self, rcode: ExtendedRcode) -> Result<()> {
+        if let Some(ref mut edns) = self.edns {
+            let raw = u16::from(rcode);
+            if raw > 4095 {
+                Err(Error::ExtendedRcodeOverflow)
+            } else {
+                self.octets[RCODE_BYTE] &= !RCODE_MASK;
+                self.octets[RCODE_BYTE] |= (raw as u8) & RCODE_MASK;
+                edns.extended_rcode_upper_bits = (raw >> 4) as u8;
+                Ok(())
+            }
+        } else {
+            Err(Error::NotEdns)
+        }
     }
 
     /// Adds a question to message. This must be used before any
@@ -426,14 +480,51 @@ impl<'a> Writer<'a> {
     pub fn clear_rrs(&mut self) {
         self.ancount = 0;
         self.nscount = 0;
-        self.arcount = 0;
+        if self.edns.is_some() {
+            self.arcount = 1;
+        } else {
+            self.arcount = 0;
+        }
         self.cursor = self.rr_start;
         self.section = Section::Question;
+    }
+
+    /// Makes this an EDNS message. This will reserve space at the end
+    /// of the message for the OPT record; if there is insufficient
+    /// space, then this will fail. This will also fail if this is
+    /// already an EDNS message.
+    pub fn set_edns(&mut self, udp_payload_size: u16) -> Result<()> {
+        if self.edns.is_some() {
+            Err(Error::AlreadyEdns)
+        } else if self.cursor > self.available - OPT_RECORD_SIZE {
+            Err(Error::Truncation)
+        } else if let Some(new_arcount) = self.arcount.checked_add(1) {
+            self.arcount = new_arcount;
+            self.available -= OPT_RECORD_SIZE;
+            self.edns = Some(Edns {
+                udp_payload_size,
+                extended_rcode_upper_bits: 0,
+            });
+            Ok(())
+        } else {
+            Err(Error::CountOverflow)
+        }
     }
 
     /// Finishes writing the message. The final length of the message
     /// is returned.
     pub fn finish(mut self) -> usize {
+        if let Some(ref edns) = self.edns {
+            // We update the "available" field before adding the OPT RR,
+            // since Reader::add_rr checks it. The unwrap after add_rr
+            // is okay, since we've ensured that there will be enough
+            // space.
+            let class = Class::from(edns.udp_payload_size);
+            let ttl = Ttl::from((edns.extended_rcode_upper_bits as u32) << 24);
+            self.available += OPT_RECORD_SIZE;
+            self.add_rr(Name::root(), Type::OPT, class, ttl, Rdata::empty())
+                .unwrap();
+        }
         self.write_u16(QDCOUNT_START, self.qdcount);
         self.write_u16(ANCOUNT_START, self.ancount);
         self.write_u16(NSCOUNT_START, self.nscount);
@@ -522,6 +613,16 @@ pub enum Error {
     /// in the wrong place in the message (e.g., adding a question after
     /// an answer resource record has already been serialized).
     OutOfOrder,
+
+    /// An attempt was made to set EDNS parameters on a non-EDNS
+    /// message.
+    NotEdns,
+
+    /// An attempt was made to set up EDNS when EDNS is already enabled.
+    AlreadyEdns,
+
+    /// An attempt was made to set an extended RCODE over 4,095.
+    ExtendedRcodeOverflow,
 }
 
 impl fmt::Display for Error {
@@ -530,6 +631,9 @@ impl fmt::Display for Error {
             Self::CountOverflow => f.write_str("record count would overflow"),
             Self::Truncation => f.write_str("message would be truncated"),
             Self::OutOfOrder => f.write_str("question or record serialized out of order"),
+            Self::NotEdns => f.write_str("not an EDNS message"),
+            Self::AlreadyEdns => f.write_str("already an EDNS message"),
+            Self::ExtendedRcodeOverflow => f.write_str("extended RCODE would overflow"),
         }
     }
 }
@@ -585,6 +689,24 @@ mod tests {
               \x08quandary\x04test\x00\x00\x01\x00\x01\
               \x08quandary\x04test\x00\x00\x01\x00\x01\x00\x00\x0e\x10\x00\x04\
               \x7f\x00\x00\x01"
+        );
+    }
+
+    #[test]
+    fn writer_works_with_edns() {
+        // Again, this is not meant to be exhaustive—just a check that
+        // basic EDNS operations work.
+        let mut buf = [0; 512];
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        writer.set_id(0x0703);
+        writer.set_opcode(Opcode::Update);
+        writer.set_qr(true);
+        writer.set_edns(1232).unwrap();
+        let len = writer.finish();
+        assert_eq!(
+            &buf[0..len],
+            b"\x07\x03\xa8\x00\x00\x00\x00\x00\x00\x00\x00\x01\
+              \x00\x00\x29\x04\xd0\x00\x00\x00\x00\x00\x00",
         );
     }
 
@@ -792,5 +914,63 @@ mod tests {
         let mut writer = Writer::new(buf.as_mut_slice(), 512).unwrap();
         writer.increase_limit(2048);
         assert_eq!(writer.limit, 1024);
+    }
+
+    #[test]
+    fn set_edns_fails_if_repeated() {
+        let mut buf = [0; 512];
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        writer.set_edns(512).unwrap();
+        assert_eq!(writer.set_edns(512), Err(Error::AlreadyEdns));
+    }
+
+    #[test]
+    fn set_rcode_zeroes_extended_rcode_upper_bits() {
+        let mut buf = [0; 512];
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        writer.set_edns(512).unwrap();
+        writer
+            .set_extended_rcode(ExtendedRcode::BADVERSBADSIG)
+            .unwrap();
+        writer.set_rcode(Rcode::NOERROR);
+        assert_eq!(writer.extended_rcode(), ExtendedRcode::NOERROR);
+    }
+
+    #[test]
+    fn extended_rcodes_work() {
+        let mut buf = [0; 512];
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        writer.set_edns(512).unwrap();
+        writer.set_extended_rcode(ExtendedRcode::BADCOOKIE).unwrap();
+        assert_eq!(writer.extended_rcode(), ExtendedRcode::BADCOOKIE);
+    }
+
+    #[test]
+    fn extended_rcode_works_without_edns() {
+        let mut buf = [0; 512];
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        writer.set_rcode(Rcode::SERVFAIL);
+        assert_eq!(writer.extended_rcode(), ExtendedRcode::SERVFAIL);
+    }
+
+    #[test]
+    fn set_extended_rcode_fails_if_not_edns() {
+        let mut buf = [0; 512];
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        assert_eq!(
+            writer.set_extended_rcode(ExtendedRcode::NOERROR),
+            Err(Error::NotEdns),
+        );
+    }
+
+    #[test]
+    fn set_extended_rcode_fails_if_value_too_large() {
+        let mut buf = [0; 512];
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        writer.set_edns(512).unwrap();
+        assert_eq!(
+            writer.set_extended_rcode(4096.into()),
+            Err(Error::ExtendedRcodeOverflow),
+        );
     }
 }
