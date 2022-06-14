@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use rand::Rng;
 
 use super::{Context, Transport};
-use crate::message::{Opcode, Rcode};
+use crate::message::{Opcode, ExtendedRcode};
 
 ////////////////////////////////////////////////////////////////////////
 // RRL PARAMETERS                                                     //
@@ -334,7 +334,7 @@ impl Rrl {
         // otherwise an attacker could evade rate-limiting by sending
         // queries with many different QNAMEs that all produce NXDOMAIN
         // or other error responses.
-        let category = context.response.rcode().into();
+        let category = context.response.extended_rcode().into();
         let dest = context.received_info.source;
         let qname_hash = if category == Category::NoError {
             let qname = if let Some(source_of_synthesis) = context.source_of_synthesis {
@@ -449,11 +449,11 @@ impl Rrl {
     }
 }
 
-impl From<Rcode> for Category {
-    fn from(rcode: Rcode) -> Self {
+impl From<ExtendedRcode> for Category {
+    fn from(rcode: ExtendedRcode) -> Self {
         match rcode {
-            Rcode::NOERROR => Self::NoError,
-            Rcode::NXDOMAIN => Self::NxDomain,
+            ExtendedRcode::NOERROR => Self::NoError,
+            ExtendedRcode::NXDOMAIN => Self::NxDomain,
             _ => Self::Error,
         }
     }

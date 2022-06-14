@@ -19,7 +19,8 @@
 
 use std::net::IpAddr;
 
-use crate::message::{writer, Opcode, Question, Rcode, Reader, Writer};
+use crate::message::reader::ReadRr;
+use crate::message::{writer, ExtendedRcode, Opcode, Question, Rcode, Reader, Writer};
 use crate::name::Name;
 use crate::rr::Type;
 use crate::zone::Zone;
@@ -207,25 +208,69 @@ impl Server {
         // We'll rewind to the beginning of the RRs after we scan them.
         context.received.mark();
 
-        // Scan all the RRs. Since we don't yet support EDNS, if we see
-        // an OPT record, we respond with FORMERR to comply with
-        // RFC 6891 § 7.
-        let rr_count = context.received.ancount() as usize
-            + context.received.nscount() as usize
-            + context.received.arcount() as usize;
-        for _ in 0..rr_count {
-            let peek = match context.received.peek_rr() {
+        // Scan all the answer and authority RRs. RFC 6891 § 6.1.1 says
+        // that the EDNS OPT record goes in additional section, so if we
+        // see it in these two sections, return FORMERR.
+        let an_plus_ns_count =
+            context.received.ancount() as usize + context.received.nscount() as usize;
+        for _ in 0..an_plus_ns_count {
+            let peek_rr = match context.received.peek_rr() {
                 Ok(p) => p,
                 Err(_) => {
                     context.response.set_rcode(Rcode::FORMERR);
                     return;
                 }
             };
-            if peek.rr_type() == Type::OPT {
+            if peek_rr.rr_type() == Type::OPT {
                 context.response.set_rcode(Rcode::FORMERR);
                 return;
             } else {
-                peek.skip();
+                peek_rr.skip();
+            }
+        }
+
+        // Scan the additional section. If we see an OPT, now's the time
+        // to process it.
+        let mut seen_opt = false;
+        for _ in 0..context.received.arcount() as usize {
+            let peek_rr = match context.received.peek_rr() {
+                Ok(p) => p,
+                Err(_) => {
+                    context.response.set_rcode(Rcode::FORMERR);
+                    return;
+                }
+            };
+            if peek_rr.rr_type() == Type::OPT {
+                // Per RFC 6891 § 6.1.1, we must return FORMERR if more
+                // than one OPT is received.
+                if seen_opt {
+                    context.response.set_rcode(Rcode::FORMERR);
+                    return;
+                } else {
+                    seen_opt = true;
+                }
+
+                // Once we find an OPT record, we produce an EDNS
+                // response, even if the OPT record is invalid (see
+                // RFC 6891 § 7).
+                if context.response.set_edns(512).is_err() {
+                    context.response.set_rcode(Rcode::SERVFAIL);
+                    return;
+                }
+                let opt_rr = match peek_rr.parse() {
+                    Ok(opt_rr) => opt_rr,
+                    Err(_) => {
+                        context.response.set_rcode(Rcode::FORMERR);
+                        return;
+                    }
+                };
+                if let Some(rcode) = validate_opt(&opt_rr) {
+                    context
+                        .response
+                        .set_extended_rcode(rcode)
+                        .expect("failed to set extended RCODE");
+                    return;
+                }
             }
         }
 
@@ -304,6 +349,29 @@ impl<'s, 'b> Context<'s, 'b> {
             response,
             rrl_action: None,
             send_response: true,
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////
+// EDNS OPT RECORD HANDLING                                           //
+////////////////////////////////////////////////////////////////////////
+
+/// Validates an EDNS OPT record. If it's not valid, then the proper
+/// error RCODE for the response is returned.
+fn validate_opt(opt_rr: &ReadRr) -> Option<ExtendedRcode> {
+    // The formatting of the OPT RDATA was already validated when we
+    // parsed it, and since we currently don't support any EDNS options,
+    // we ignore any sent to us (per RFC 6891 § 6.1.2). What remains is
+    // to check the owner name and the EDNS version.
+    if !opt_rr.owner.is_root() {
+        Some(ExtendedRcode::FORMERR)
+    } else {
+        let edns_version = (u32::from(opt_rr.ttl) >> 16) as u8;
+        if edns_version != 0 {
+            Some(ExtendedRcode::BADVERSBADSIG)
+        } else {
+            None
         }
     }
 }
