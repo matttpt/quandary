@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use rand::Rng;
 
 use super::{Context, Transport};
-use crate::message::{Opcode, ExtendedRcode};
+use crate::message::{ExtendedRcode, Opcode};
 
 ////////////////////////////////////////////////////////////////////////
 // RRL PARAMETERS                                                     //
