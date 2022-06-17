@@ -39,27 +39,31 @@
 //! In addition, the following checks are also implemented in
 //! [`Zone::validate`]:
 //!
-//! 6. A name cannot own more than one CNAME record.
-//! 7. A name cannot own a CNAME record and another record of a
-//!    different type.
-//! 8. Any in-zone nameservers referenced by NS records must have A or
-//!    AAAA records.
-//! 9. Any in-zone mail exchangers referenced by MX records should have
-//!    A or AAAA records (warning only).
+//!  6. A name cannot own more than one CNAME record.
+//!  7. A name cannot own a CNAME record and another record of a
+//!     different type.
+//!  8. Any in-zone nameservers referenced by NS records must have A or
+//!     AAAA records.
+//!  9. Any in-zone mail exchangers referenced by MX records should have
+//!     A or AAAA records (warning only).
+//! 10. Wildcard domain names should not own NS records, since
+//!     [RFC 4592 § 4.2] discourages this and leaves its semantics
+//!     undefined (warning only).
 //!
 //! Finally, the following checks (in addition to RFC 1035's check 1)
 //! are enforced by [`Zone::add`], since the [`Zone`] data structure
 //! (and the [`Rrset`](crate::rr::Rrset)s it contains) cannot represent a
 //! zone with these errors:
 //!
-//! 10. The owners of all records are at or below the zone apex.
-//! 11. The TTL of each record in an RRset is the same (as required by
+//! 11. The owners of all records are at or below the zone apex.
+//! 12. The TTL of each record in an RRset is the same (as required by
 //!     [RFC 2181 § 5.2]).
 //!
 //! [RFC 1035 § 5.2]: https://datatracker.ietf.org/doc/html/rfc1035#section-5.2
 //! [Erratum 5626]: https://www.rfc-editor.org/errata/eid5626
 //! [RFC 2136]: https://datatracker.ietf.org/doc/html/rfc2136
 //! [RFC 2181 § 5.2]: https://datatracker.ietf.org/doc/html/rfc2181#section-5.2
+//! [RFC 4592 § 4.2]: https://datatracker.ietf.org/doc/html/rfc4592#section-4.2
 
 use std::fmt;
 
@@ -83,13 +87,14 @@ pub enum ValidationIssue<'a> {
     MissingGlue(Box<Name>),
     DuplicateCname(&'a Name),
     OtherRecordsAtCname(&'a Name),
+    NsAtWildcard(&'a Name),
 }
 
 impl ValidationIssue<'_> {
     /// Returns whether the `ValidationIssue` represents a (fatal)
     /// error. Otherwise, it is a warning.
     pub fn is_error(&self) -> bool {
-        !matches!(*self, Self::MissingMxAddress(_))
+        !matches!(*self, Self::MissingMxAddress(_) | Self::NsAtWildcard(_))
     }
 }
 
@@ -122,6 +127,12 @@ impl fmt::Display for ValidationIssue<'_> {
                 "the name {}, which has a CNAME record, cannot have other records",
                 name
             ),
+            Self::NsAtWildcard(name) => write!(
+                f,
+                "the wildcard domain name {} owns an NS RRset; \
+                 this is discouraged and its semantics are undefined",
+                name
+            ),
         }
     }
 }
@@ -132,10 +143,8 @@ impl fmt::Display for ValidationIssue<'_> {
 
 impl Zone {
     /// Checks a zone for semantic errors and warnings (other than those
-    /// that are caught in [`Zone::add`]).
-    ///
-    /// The checks that are implemented here are checks 2, 3, 5, 6, 7,
-    /// and 8 listed in the documentation for the `validation` module.
+    /// that are caught in [`Zone::add`]). See [`ValidationIssue`] for
+    /// the kinds of errors and warnings that this method returns.
     pub fn validate(&self) -> Result<Vec<ValidationIssue>, Error> {
         let mut issues = Vec::new();
 
@@ -161,9 +170,8 @@ impl Zone {
             issues.push(ValidationIssue::MissingApexNs);
         }
 
-        // Now, we scan the nodes of the zone, which will perform CNAME
-        // checks (6 and 7), NS address/glue checks (3 and 8), and
-        // MX address checks (11) at the appropriate nodes.
+        // Now, we scan the nodes of the zone, which will perform the
+        // remaining checks.
         scan_zone(self, &mut issues)?;
         Ok(issues)
     }
@@ -176,7 +184,7 @@ fn scan_zone<'a>(zone: &'a Zone, issues: &mut Vec<ValidationIssue<'a>>) -> Resul
 
 /// Scans a node, checking for semantic errors and warnings. After
 /// checking the current node, all of its children are scanned. This
-/// implements checks 3, 6, 7, and 8.
+/// implements checks 3 and 6 through 10.
 fn scan_node<'a>(
     zone: &'a Zone,
     node: &'a Node,
@@ -207,12 +215,18 @@ fn scan_node<'a>(
         }
     }
 
+    // Perform the NS-at-wildcard check (10).
+    let maybe_ns_rrset = node.rrsets.lookup(Type::NS);
+    if maybe_ns_rrset.is_some() && node.name.is_wildcard() {
+        issues.push(ValidationIssue::NsAtWildcard(&node.name));
+    }
+
     // Perform glue (3) and in-zone NS address (8) checks.
     // TODO: should we also check occluded NS records, or just NS
     //       records currently in authoritative data as we do now?
     let at_delegation_point;
     if !at_apex && in_authoritative {
-        if let Some(ns_rrset) = node.rrsets.lookup(Type::NS) {
+        if let Some(ns_rrset) = maybe_ns_rrset {
             at_delegation_point = false;
             for rdata in ns_rrset.rdatas() {
                 let nsdname =
@@ -359,6 +373,7 @@ mod tests {
         static ref SUBDEL: Box<Name> = "subdel.quandary.test.".parse().unwrap();
         static ref NS_SUBDEL: Box<Name> = "ns.subdel.quandary.test.".parse().unwrap();
         static ref SUBDEL2: Box<Name> = "subdel2.quandary.test.".parse().unwrap();
+        static ref WILDCARD: Box<Name> = "*.quandary.test.".parse().unwrap();
         static ref APEX_SOA_RDATA: &'static Rdata = b"\
                 \x02ns\x08quandary\x04test\x00\
                 \x08hostmaster\x08quandary\x04test\x00\
@@ -533,6 +548,18 @@ mod tests {
         assert_eq!(
             zone.validate().unwrap(),
             vec![ValidationIssue::MissingMxAddress(MX.clone())]
+        );
+    }
+
+    #[test]
+    fn validate_detects_ns_at_wildcard() {
+        let mut zone = Zone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
+        add_basic_rrs(&mut zone);
+        add_rr(&mut zone, &NS_SUBDEL, Type::A, &LOCALHOST_RDATA);
+        add_rr(&mut zone, &WILDCARD, Type::NS, &SUBDEL_NS_RDATA);
+        assert_eq!(
+            zone.validate().unwrap(),
+            vec![ValidationIssue::NsAtWildcard(&WILDCARD)],
         );
     }
 }

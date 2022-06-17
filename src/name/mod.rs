@@ -245,6 +245,12 @@ impl Name {
         self.n_labels == 1
     }
 
+    /// Returns whether the `Name` is a wildcard domain name (i.e.,
+    /// whether its first label is `*`).
+    pub fn is_wildcard(&self) -> bool {
+        self[0].is_asterisk()
+    }
+
     /// Returns an iterator over labels in this `Name`.
     pub fn labels(&self) -> Labels {
         Labels::new(self)
@@ -650,6 +656,18 @@ mod tests {
         assert_eq!(root.len(), 1);
         assert_eq!(root.label_offsets(), &[0]);
         assert_eq!(root.wire_repr(), &[0]);
+    }
+
+    #[test]
+    fn is_wildcard_works() {
+        let wildcard: Box<Name> = "*.quandary.test.".parse().unwrap();
+        let not_a_wildcard: Box<Name> = "quandary.test.".parse().unwrap();
+        let double_asterisk: Box<Name> = "*.*.quandary.test.".parse().unwrap();
+        let inner_asterisk: Box<Name> = "x.*.quandary.test.".parse().unwrap();
+        assert!(wildcard.is_wildcard());
+        assert!(!not_a_wildcard.is_wildcard());
+        assert!(double_asterisk.is_wildcard());
+        assert!(!inner_asterisk.is_wildcard());
     }
 
     #[test]
