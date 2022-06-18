@@ -112,7 +112,7 @@ impl Server {
         response.set_id(received.id());
         response.set_qr(true);
         response.set_opcode(received.opcode());
-        if received.opcode() == Opcode::Query {
+        if received.opcode() == Opcode::QUERY {
             // Per the ISC DNS compliance testing tool, RD is only
             // defined for opcode QUERY and thus we shouldn't copy it
             // otherwise.
@@ -283,7 +283,7 @@ impl Server {
         // With preliminary checks complete, it's time to start the
         // opcode-specific handling!
         match context.received.opcode() {
-            Opcode::Query => self.handle_query(context),
+            Opcode::QUERY => self.handle_query(context),
             _ => context.response.set_rcode(Rcode::NOTIMP),
         }
     }

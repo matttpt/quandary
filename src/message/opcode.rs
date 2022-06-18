@@ -25,48 +25,55 @@ use std::fmt;
 /// [RFC 1035 § 4.1.1] defines the opcode field as a four-bit field
 /// indicating the kind of query being made in the message. The first
 /// three values are from the original specification, while the rest
-/// have been added in later extensions to the DNS. The names of each
-/// member of the `Opcode` enumeration are those listed by the IANA.
+/// have been added in later extensions to the DNS.
 ///
 /// [RFC 1035 § 4.1.1]: https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.1
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
-pub enum Opcode {
-    Query,
-    IQuery,
-    Status,
-    Notify,
-    Update,
-    Dso,
-    Unassigned(u8),
+#[derive(Copy, Clone, Eq, Hash, PartialEq)]
+pub struct Opcode(u8);
+
+impl Opcode {
+    pub const QUERY: Self = Self(0);
+    pub const IQUERY: Self = Self(1);
+    pub const STATUS: Self = Self(2);
+    pub const NOTIFY: Self = Self(4);
+    pub const UPDATE: Self = Self(5);
+    pub const DSO: Self = Self(6);
 }
 
 impl TryFrom<u8> for Opcode {
     type Error = IntoOpcodeError;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::Query),
-            1 => Ok(Self::IQuery),
-            2 => Ok(Self::Status),
-            4 => Ok(Self::Notify),
-            5 => Ok(Self::Update),
-            6 => Ok(Self::Dso),
-            3 | 7..=15 => Ok(Self::Unassigned(value)),
-            _ => Err(IntoOpcodeError),
+        if value < 16 {
+            Ok(Self(value))
+        } else {
+            Err(IntoOpcodeError)
         }
     }
 }
 
 impl From<Opcode> for u8 {
     fn from(value: Opcode) -> Self {
-        match value {
-            Opcode::Query => 0,
-            Opcode::IQuery => 1,
-            Opcode::Status => 2,
-            Opcode::Notify => 4,
-            Opcode::Update => 5,
-            Opcode::Dso => 6,
-            Opcode::Unassigned(v) => v,
+        value.0
+    }
+}
+
+impl fmt::Debug for Opcode {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", *self)
+    }
+}
+
+impl fmt::Display for Opcode {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Self::QUERY => f.write_str("QUERY"),
+            Self::IQUERY => f.write_str("IQUERY"),
+            Self::STATUS => f.write_str("STATUS"),
+            Self::NOTIFY => f.write_str("NOTIFY"),
+            Self::UPDATE => f.write_str("UPDATE"),
+            Self::DSO => f.write_str("DSO"),
+            Self(value) => write!(f, "unassigned opcode {}", value),
         }
     }
 }
@@ -86,3 +93,26 @@ impl fmt::Display for IntoOpcodeError {
 }
 
 impl std::error::Error for IntoOpcodeError {}
+
+////////////////////////////////////////////////////////////////////////
+// TESTS                                                              //
+////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opcode_try_from_u8_accepts_valid_values() {
+        for value in 0..16 {
+            assert_eq!(Opcode::try_from(value), Ok(Opcode(value)));
+        }
+    }
+
+    #[test]
+    fn opcode_try_from_u8_rejects_large_values() {
+        for value in 16..=u8::MAX {
+            assert_eq!(Opcode::try_from(value), Err(IntoOpcodeError));
+        }
+    }
+}

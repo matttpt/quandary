@@ -493,7 +493,7 @@ mod tests {
         // Check the header.
         assert_eq!(reader.id(), 0xe2d7);
         assert!(reader.qr());
-        assert_eq!(reader.opcode(), Opcode::Query);
+        assert_eq!(reader.opcode(), Opcode::QUERY);
         assert!(!reader.aa());
         assert!(!reader.tc());
         assert!(reader.rd());

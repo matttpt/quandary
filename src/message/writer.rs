@@ -676,7 +676,7 @@ mod tests {
         let mut buf = vec![0; 512];
         let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
         writer.set_id(0x0703);
-        writer.set_opcode(Opcode::Query);
+        writer.set_opcode(Opcode::QUERY);
         writer.set_qr(true);
         writer.set_aa(true);
         writer.set_rcode(Rcode::NOERROR);
@@ -699,7 +699,7 @@ mod tests {
         let mut buf = [0; 512];
         let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
         writer.set_id(0x0703);
-        writer.set_opcode(Opcode::Update);
+        writer.set_opcode(Opcode::UPDATE);
         writer.set_qr(true);
         writer.set_edns(1232).unwrap();
         let len = writer.finish();

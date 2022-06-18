@@ -464,7 +464,7 @@ impl From<ExtendedRcode> for Category {
 fn subject_to_rrl(context: &Context) -> bool {
     context.send_response
         && context.received_info.transport == Transport::Udp
-        && context.received.opcode() == Opcode::Query
+        && context.received.opcode() == Opcode::QUERY
 }
 
 ////////////////////////////////////////////////////////////////////////
