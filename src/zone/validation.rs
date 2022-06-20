@@ -70,7 +70,7 @@ use std::fmt;
 use crate::name::Name;
 use crate::rr::{RrsetList, Type};
 
-use super::{Error, GluePolicy, LookupAllResult, Node, Zone};
+use super::{Error, GluePolicy, LookupAllResult, Zone, ZoneNode};
 
 ////////////////////////////////////////////////////////////////////////
 // VALIDATION ISSUES                                                  //
@@ -187,14 +187,14 @@ fn scan_zone<'a>(zone: &'a Zone, issues: &mut Vec<ValidationIssue<'a>>) -> Resul
 /// implements checks 3 and 6 through 10.
 fn scan_node<'a>(
     zone: &'a Zone,
-    node: &'a Node,
+    node: &'a ZoneNode,
     at_apex: bool,
     in_authoritative: bool,
     issues: &mut Vec<ValidationIssue<'a>>,
 ) -> Result<(), Error> {
     // Perform CNAME checks (6 and 7).
-    if let Some(cname_rrset) = node.rrsets.lookup(Type::CNAME) {
-        if node.rrsets.len() != 1 {
+    if let Some(cname_rrset) = node.data.rrsets.lookup(Type::CNAME) {
+        if node.data.rrsets.len() != 1 {
             issues.push(ValidationIssue::OtherRecordsAtCname(&node.name));
         }
         if cname_rrset.rdatas().count() != 1 {
@@ -203,7 +203,7 @@ fn scan_node<'a>(
     }
 
     // Perform the MX address check (9).
-    if let Some(mx_rrset) = node.rrsets.lookup(Type::MX) {
+    if let Some(mx_rrset) = node.data.rrsets.lookup(Type::MX) {
         for rdata in mx_rrset.rdatas() {
             let name = rdata
                 .octets()
@@ -216,7 +216,7 @@ fn scan_node<'a>(
     }
 
     // Perform the NS-at-wildcard check (10).
-    let maybe_ns_rrset = node.rrsets.lookup(Type::NS);
+    let maybe_ns_rrset = node.data.rrsets.lookup(Type::NS);
     if maybe_ns_rrset.is_some() && node.name.is_wildcard() {
         issues.push(ValidationIssue::NsAtWildcard(&node.name));
     }

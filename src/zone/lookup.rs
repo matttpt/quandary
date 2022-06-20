@@ -16,7 +16,8 @@
 //! described in [RFC 1034 § 4.3.2] and clarified by [RFC 4592].
 //!
 //! In step 2, the zone that should be searched (i.e., the one that is
-//! the nearest ancestor to QNAME) was identified. Now, we search that
+//! the nearest ancestor to QNAME) was identified. (This is implemented
+//! in [`Catalog::lookup`](super::Catalog::lookup).) Now, we search that
 //! zone's database for the node corresponding to QNAME, or if this
 //! fails, corresponding to an appropriate wildcard domain name. If and
 //! when an appropriate node is found, it is searched for records
@@ -49,7 +50,7 @@
 use crate::name::{Label, Name};
 use crate::rr::{Rrset, RrsetList, Type};
 
-use super::{Node, Zone};
+use super::{Zone, ZoneNode};
 
 /// The result of a lookup of records of a specific type.
 #[derive(Debug)]
@@ -222,13 +223,13 @@ impl Zone {
     /// Looks up the SOA record at the zone's apex (for convenience and
     /// performance).
     pub fn soa(&self) -> Option<&Rrset> {
-        self.apex.rrsets.lookup(Type::SOA)
+        self.apex.data.rrsets.lookup(Type::SOA)
     }
 
     /// Looks up the NS record at the zone's apex (for convenience and
     /// performance).
     pub fn ns(&self) -> Option<&Rrset> {
-        self.apex.rrsets.lookup(Type::NS)
+        self.apex.data.rrsets.lookup(Type::NS)
     }
 }
 
@@ -243,7 +244,7 @@ impl Zone {
 /// we're at the zone apex, so the first call should set `at_apex` to
 /// `true`.
 fn lookup_impl<'a>(
-    node: &'a Node,
+    node: &'a ZoneNode,
     name: &Name,
     level: usize,
     process_referrals: bool,
@@ -252,7 +253,7 @@ fn lookup_impl<'a>(
     // If the node has an NS record, that triggers a referral—even when
     // the node is the target node!
     if !at_apex && process_referrals {
-        if let Some(ns_rrset) = node.rrsets.lookup(Type::NS) {
+        if let Some(ns_rrset) = node.data.rrsets.lookup(Type::NS) {
             return LookupAllResult::Referral(Referral {
                 child_zone: &node.name,
                 ns_rrset,
@@ -262,7 +263,7 @@ fn lookup_impl<'a>(
 
     if level == 0 {
         LookupAllResult::Found(FoundAll {
-            rrsets: &node.rrsets,
+            rrsets: &node.data.rrsets,
             source_of_synthesis: None,
         })
     } else {
@@ -274,7 +275,7 @@ fn lookup_impl<'a>(
             lookup_impl(subnode, name, level - 1, process_referrals, false)
         } else if let Some(source_of_synthesis) = node.children.get(Label::asterisk()) {
             LookupAllResult::Found(FoundAll {
-                rrsets: &source_of_synthesis.rrsets,
+                rrsets: &source_of_synthesis.data.rrsets,
                 source_of_synthesis: Some(&source_of_synthesis.name),
             })
         } else {

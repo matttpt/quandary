@@ -23,7 +23,7 @@ use crate::message::reader::ReadRr;
 use crate::message::{writer, ExtendedRcode, Opcode, Question, Rcode, Reader, Writer};
 use crate::name::Name;
 use crate::rr::Type;
-use crate::zone::Zone;
+use crate::zone::Catalog;
 
 mod query;
 mod rrl;
@@ -46,19 +46,18 @@ pub use rrl::{RrlParamError, RrlParams};
 /// are chosen, and then sending the responses that the [`Server`]
 /// produces.
 ///
-/// The [`Server`] in turn produces responses based on its catalog of
-/// [`Zone`]s loaded into memory. Currently, only one [`Zone`] is
-/// supported. A [`Server`] is created to serve a [`Zone`] with
-/// [`Server::new`].
+/// The [`Server`] in turn produces responses based on its [`Catalog`]
+/// of [`Zone`](crate::zone::Zone)s loaded into memory. A [`Server`] is
+/// created to serve a [`Catalog`] with [`Server::new`].
 pub struct Server {
-    zone: Zone,
+    catalog: Catalog,
     rrl: Option<Rrl>,
 }
 
 impl Server {
-    /// Creates a new `Server` that will serve the provided [`Zone`].
-    pub fn new(zone: Zone) -> Self {
-        Self { zone, rrl: None }
+    /// Creates a new `Server` that will serve the provided [`Catalog`].
+    pub fn new(catalog: Catalog) -> Self {
+        Self { catalog, rrl: None }
     }
 
     /// Configures response rate-limiting for this `Server`. If passed

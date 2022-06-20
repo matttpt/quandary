@@ -50,18 +50,20 @@ impl Server {
             return;
         }
 
-        // When we support multiple zones, here is where we will find
-        // the appropriate zone. But for now, we just make sure that the
-        // QCLASS matches, and then we try to answer the query. The
-        // answering logic currently takes care of responding REFUSED if
-        // it turns out (after calling the Zone lookup methods) that the
-        // QNAME is not part of the single zone we serve.
-        if Class::from(question.qclass) != self.zone.class() {
-            context.response.set_rcode(Rcode::REFUSED);
-            return;
-        }
+        // Find which zone (if any) in our catalog is the longest match
+        // for the QNAME and QCLASS.
+        let zone = match self
+            .catalog
+            .lookup(&question.qname, Class::from(question.qclass))
+        {
+            Some(z) => z,
+            None => {
+                context.response.set_rcode(Rcode::REFUSED);
+                return;
+            }
+        };
 
-        self.handle_non_axfr_query(&self.zone, context);
+        self.handle_non_axfr_query(zone, context);
     }
 
     /// Handles a non-AXFR DNS query.
@@ -133,10 +135,7 @@ fn answer<'s>(zone: &'s Zone, context: &mut Context<'s, '_>) -> ProcessingResult
             context.response.set_aa(true);
             add_negative_caching_soa(zone, &mut context.response)
         }
-        LookupResult::WrongZone => {
-            context.response.set_rcode(Rcode::REFUSED);
-            Ok(())
-        }
+        LookupResult::WrongZone => panic!("tried to look up a name in the wrong zone"),
     }
 }
 
@@ -171,10 +170,7 @@ fn answer_any<'s>(zone: &'s Zone, context: &mut Context<'s, '_>) -> ProcessingRe
             context.response.set_aa(true);
             add_negative_caching_soa(zone, &mut context.response)
         }
-        LookupAllResult::WrongZone => {
-            context.response.set_rcode(Rcode::REFUSED);
-            Ok(())
-        }
+        LookupAllResult::WrongZone => panic!("tried to look up a name in the wrong zone"),
     }
 }
 

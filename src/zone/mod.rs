@@ -15,18 +15,22 @@
 //! Implementation of DNS zone data structures, for keeping DNS zones
 //! loaded in memory.
 
-use std::collections::HashMap;
-
 use crate::class::Class;
-use crate::name::{LabelBuf, Name};
+use crate::name::Name;
 use crate::rr::{Rdata, RrsetList, Ttl, Type};
 
+mod catalog;
 mod error;
 mod lookup;
+mod node;
 mod validation;
+
+pub use catalog::Catalog;
 pub use error::Error;
 pub use lookup::{Cname, Found, FoundAll, LookupAllResult, LookupResult, NoRecords, Referral};
 pub use validation::ValidationIssue;
+
+use node::Node;
 
 /// A DNS zone loaded into memory.
 ///
@@ -48,17 +52,14 @@ pub use validation::ValidationIssue;
 pub struct Zone {
     class: Class,
     glue_policy: GluePolicy,
-    apex: Node,
+    apex: ZoneNode,
 }
 
-/// A node in the DNS tree, which may own RRsets.
-#[derive(Debug)]
-struct Node {
-    name: Box<Name>,
+type ZoneNode = Node<ZoneNodeData>;
+
+#[derive(Debug, Default)]
+struct ZoneNodeData {
     rrsets: RrsetList,
-    // TODO: Do we want to use LabelBuf here? Or should we use a boxed
-    // Label? If so, LabelBuf can be removed from the software.
-    children: HashMap<LabelBuf, Node>,
 }
 
 impl Zone {
@@ -68,11 +69,7 @@ impl Zone {
         Self {
             class,
             glue_policy,
-            apex: Node {
-                name,
-                rrsets: RrsetList::new(),
-                children: HashMap::new(),
-            },
+            apex: ZoneNode::new(name),
         }
     }
 
@@ -129,31 +126,11 @@ impl Zone {
         }
         let node = self
             .apex
-            .get_or_create_descendant(owner, owner.len() - self.apex.name.len());
-        node.rrsets
+            .get_or_create_descendant(owner, owner.len() - self.name().len());
+        node.data
+            .rrsets
             .add(rr_type, class, ttl, rdata)
             .map_err(|e| e.into())
-    }
-}
-
-impl Node {
-    /// Gets or creates a descendant node corresponding to `name`. Any
-    /// nodes between the target descendant node and `self` will also be
-    /// created. `level` should be set so that `self` corresponds to the
-    /// label `name[level]`.
-    fn get_or_create_descendant(&mut self, name: &Name, level: usize) -> &mut Node {
-        if level == 0 {
-            self
-        } else {
-            self.children
-                .entry(name[level - 1].to_owned())
-                .or_insert_with(|| Node {
-                    name: name.superdomain(level - 1).unwrap(),
-                    rrsets: RrsetList::new(),
-                    children: HashMap::new(),
-                })
-                .get_or_create_descendant(name, level - 1)
-        }
     }
 }
 
@@ -250,11 +227,14 @@ mod tests {
         let b_node = c_node.children.get(<&Label>::from(b"b")).unwrap();
         let a_node = b_node.children.get(<&Label>::from(b"a")).unwrap();
         assert_eq!(a_node.children.len(), 0);
-        assert_eq!(a_node.rrsets.iter().next().unwrap().rr_type, Type::A);
+        assert_eq!(a_node.data.rrsets.iter().next().unwrap().rr_type, Type::A);
 
         // Finally, make sure that Node::get_or_create_descendant now
         // finds existing nodes, rather than creating new ones.
         let lookup_result = zone.apex.get_or_create_descendant(&name, 3);
-        assert_eq!(lookup_result.rrsets.iter().next().unwrap().rr_type, Type::A);
+        assert_eq!(
+            lookup_result.data.rrsets.iter().next().unwrap().rr_type,
+            Type::A,
+        );
     }
 }
