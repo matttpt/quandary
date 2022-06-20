@@ -24,7 +24,6 @@ pub enum Error {
     NotInZone,
     ClassMismatch,
     TtlMismatch,
-    RdataTooLong,
     InvalidRdata,
 }
 
@@ -38,7 +37,6 @@ impl fmt::Display for Error {
             Self::TtlMismatch => f.write_str(
                 "the record's TTL does not match the TTL of existing records in the same RRset",
             ),
-            Self::RdataTooLong => f.write_str("RDATA was longer than 65,536 octets"),
             Self::InvalidRdata => {
                 f.write_str("the operation required RDATA parsing, and invalid RDATA was found")
             }
