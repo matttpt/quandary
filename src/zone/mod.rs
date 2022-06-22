@@ -25,7 +25,7 @@ mod lookup;
 mod node;
 mod validation;
 
-pub use catalog::Catalog;
+pub use catalog::{Catalog, CatalogEntry};
 pub use error::Error;
 pub use lookup::{Cname, Found, FoundAll, LookupAllResult, LookupResult, NoRecords, Referral};
 pub use validation::ValidationIssue;

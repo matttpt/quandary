@@ -21,7 +21,7 @@ use crate::class::Class;
 use crate::message::{writer, Qclass, Qtype, Rcode, Writer};
 use crate::name::Name;
 use crate::rr::{Rdata, Rrset, RrsetList, Ttl, Type};
-use crate::zone::{LookupAllResult, LookupResult, Zone};
+use crate::zone::{CatalogEntry, LookupAllResult, LookupResult, Zone};
 
 impl Server {
     /// Handles a DNS message with opcode QUERY.
@@ -56,7 +56,11 @@ impl Server {
             .catalog
             .lookup(&question.qname, Class::from(question.qclass))
         {
-            Some(z) => z,
+            Some(CatalogEntry::Loaded(zone)) => zone,
+            Some(CatalogEntry::NotYetLoaded(_, _) | CatalogEntry::FailedToLoad(_, _)) => {
+                context.response.set_rcode(Rcode::SERVFAIL);
+                return;
+            }
             None => {
                 context.response.set_rcode(Rcode::REFUSED);
                 return;
