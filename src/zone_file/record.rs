@@ -233,6 +233,7 @@ impl<S: Read> Parser<S> {
             Type::WKS => self.parse_wks_rdata(),
             Type::HINFO => self.parse_hinfo_rdata(),
             Type::MINFO => self.parse_minfo_rdata(),
+            Type::MX => self.parse_mx_rdata(),
             Type::TXT => self.parse_txt_rdata(),
             Type::AAAA => self.parse_aaaa_rdata(),
             Type::SRV => self.parse_srv_rdata(),
@@ -382,6 +383,22 @@ impl<S: Read> Parser<S> {
 
             let mut rdata = Vec::new();
             rdata::serialize_minfo(&rmailbx, &emailbx, &mut rdata);
+            Ok(rdata)
+        }
+    }
+
+    /// Parses RDATA for MX records.
+    fn parse_mx_rdata(&mut self) -> Result<Vec<u8>> {
+        if self.check_backslash_hash(ErrorKind::ExpectedU16OrBh)? {
+            self.parse_unknown_rdata_with_validation(Rdata::validate_as_mx)
+        } else {
+            let preference = self.reader.read_field(ErrorKind::InvalidInt)?;
+            self.reader.skip_to_next_field(ErrorKind::ExpectedName)?;
+            let exchange = self.parse_name()?;
+            self.reader.expect_eol()?;
+
+            let mut rdata = Vec::new();
+            rdata::serialize_mx(preference, &exchange, &mut rdata);
             Ok(rdata)
         }
     }
