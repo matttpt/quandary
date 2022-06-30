@@ -14,5 +14,12 @@ log = "0.4"
 rand = "0.8"
 slab = "0.4"
 
+[target."cfg(unix)".dependencies]
+nix = { version = "0.24", default-features = false, features = ["poll"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+nix = { version = "0.24", default-features = false, features = ["net", "socket", "uio"] }
+
 [dev-dependencies]
 lazy_static = "1.4"
