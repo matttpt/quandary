@@ -283,13 +283,9 @@ fn handle_tcp_connection(
         let received_len = received_len.unwrap();
 
         // Process the DNS message and write the response, if any.
-        let received_info = ReceivedInfo {
-            source: client_ip,
-            transport: Transport::Tcp,
-        };
         match server.handle_message(
             &received_buf[2..received_len + 2],
-            received_info,
+            ReceivedInfo::new(client_ip, Transport::Tcp),
             &mut response_buf[2..],
         ) {
             Response::Single(response_len) => {
@@ -347,13 +343,9 @@ fn run_udp_worker(
         };
 
         // Process the DNS message and send the response, if any.
-        let received_info = ReceivedInfo {
-            source: src.ip(),
-            transport: Transport::Udp,
-        };
         match server.handle_message(
             &received_buf[0..received_len],
-            received_info,
+            ReceivedInfo::new(src.ip(), Transport::Udp),
             &mut response_buf,
         ) {
             Response::Single(response_len) => {

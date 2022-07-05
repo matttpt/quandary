@@ -17,7 +17,7 @@
 //! The [`Server`] structure is the heart of this module; see its
 //! documentation for details.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, RwLock};
 
 use crate::message::reader::ReadRr;
@@ -311,8 +311,36 @@ impl Server {
 /// [`Server::handle_message`].
 #[derive(Clone, Copy, Debug)]
 pub struct ReceivedInfo {
-    pub source: IpAddr,
-    pub transport: Transport,
+    source: IpAddr,
+    transport: Transport,
+}
+
+impl ReceivedInfo {
+    /// Creates a new [`ReceivedInfo`].
+    ///
+    /// It is important (particularly for RRL and IP-based ACLs) that
+    /// IPv4-mapped IPv6 addresses of the kind that dual-stack sockets
+    /// produce (e.g. `::ffff:127.0.0.1`) be interpreted as IPv4
+    /// addresses. This function performs that canonicalization; calling
+    /// I/O code need not concern itself with this task.
+    pub fn new(source: IpAddr, transport: Transport) -> Self {
+        // TODO: just use IpAddr::to_canonical if/when it's stabilized.
+        let source = match source {
+            original @ IpAddr::V4(_) => original,
+            original @ IpAddr::V6(ipv6) => {
+                let octets = ipv6.octets();
+                if octets[10] == 0xff && octets[11] == 0xff {
+                    // This is an IPv4-mapped address.
+                    IpAddr::V4(Ipv4Addr::new(
+                        octets[12], octets[13], octets[14], octets[15],
+                    ))
+                } else {
+                    original
+                }
+            }
+        };
+        Self { source, transport }
+    }
 }
 
 /// Indicates the transport through which a DNS message was received.
@@ -427,3 +455,22 @@ impl From<writer::Error> for ProcessingError {
 /// A result type used internally by [`server`](crate::server) functions
 /// that process DNS messages.
 type ProcessingResult<T> = Result<T, ProcessingError>;
+
+////////////////////////////////////////////////////////////////////////
+// TESTS                                                              //
+////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn received_info_constructor_canonicalizes_ipv4_mapped_ipv6_addrs() {
+        let ipv4_mapped_ipv6 = "::ffff:127.0.0.1".parse().unwrap();
+        let received_info = ReceivedInfo::new(ipv4_mapped_ipv6, Transport::Udp);
+        assert_eq!(
+            received_info.source,
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+        );
+    }
+}
