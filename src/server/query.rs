@@ -52,7 +52,7 @@ impl Server {
 
         // Find which zone (if any) in our catalog is the longest match
         // for the QNAME and QCLASS.
-        let zone = match self
+        let zone = match context
             .catalog
             .lookup(&question.qname, Class::from(question.qclass))
         {
@@ -71,7 +71,7 @@ impl Server {
     }
 
     /// Handles a non-AXFR DNS query.
-    fn handle_non_axfr_query<'s, 'c>(&'s self, zone: &'s Zone, context: &'c mut Context<'s, '_>) {
+    fn handle_non_axfr_query<'c>(&self, zone: &'c Zone, context: &mut Context<'c, '_>) {
         let question = context.question.as_ref().unwrap();
         let result = if question.qtype == Qtype::ANY {
             answer_any(zone, context)
@@ -107,7 +107,7 @@ impl Server {
 
 /// Answers a query for a specific RR type once the appropriate zone to
 /// search has been determined.
-fn answer<'s>(zone: &'s Zone, context: &mut Context<'s, '_>) -> ProcessingResult<()> {
+fn answer<'c>(zone: &'c Zone, context: &mut Context<'c, '_>) -> ProcessingResult<()> {
     let question = context.question.as_ref().unwrap();
     let qname = &question.qname;
     let rr_type = question.qtype.into();
@@ -145,7 +145,7 @@ fn answer<'s>(zone: &'s Zone, context: &mut Context<'s, '_>) -> ProcessingResult
 
 /// Answers a query with QTYPE * (ANY) once the appropriate zone to
 /// search has been determined.
-fn answer_any<'s>(zone: &'s Zone, context: &mut Context<'s, '_>) -> ProcessingResult<()> {
+fn answer_any<'c>(zone: &'c Zone, context: &mut Context<'c, '_>) -> ProcessingResult<()> {
     let question = context.question.as_ref().unwrap();
     let qname = &question.qname;
 

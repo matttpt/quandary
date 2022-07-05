@@ -18,6 +18,7 @@
 //! documentation for details.
 
 use std::net::IpAddr;
+use std::sync::{Arc, RwLock};
 
 use crate::message::reader::ReadRr;
 use crate::message::{writer, ExtendedRcode, Opcode, Question, Rcode, Reader, Writer};
@@ -50,14 +51,30 @@ pub use rrl::{RrlParamError, RrlParams};
 /// of [`Zone`](crate::zone::Zone)s loaded into memory. A [`Server`] is
 /// created to serve a [`Catalog`] with [`Server::new`].
 pub struct Server {
-    catalog: Catalog,
+    catalog: RwLock<Arc<Catalog>>,
     rrl: Option<Rrl>,
 }
 
 impl Server {
     /// Creates a new `Server` that will serve the provided [`Catalog`].
-    pub fn new(catalog: Catalog) -> Self {
-        Self { catalog, rrl: None }
+    pub fn new(catalog: Arc<Catalog>) -> Self {
+        Self {
+            catalog: RwLock::new(catalog),
+            rrl: None,
+        }
+    }
+
+    /// Returns the current [`Catalog`] of the server.
+    pub fn catalog(&self) -> Arc<Catalog> {
+        self.catalog.read().unwrap().clone()
+    }
+
+    /// Sets the [`Catalog`] of the `Server`. Some in-flight message
+    /// handling may continue to use the old [`Catalog`] (depending on
+    /// how far it has gotten), but handling started after this call
+    /// completes will see the new one.
+    pub fn set_catalog(&self, catalog: Arc<Catalog>) {
+        *self.catalog.write().unwrap() = catalog;
     }
 
     /// Configures response rate-limiting for this `Server`. If passed
@@ -119,11 +136,13 @@ impl Server {
         }
 
         // We now have our Reader and Writer set up. Next, we create a
-        // Context structure, which holds the Reader/Writer and also
-        // keeps track of other information recorded during the
-        // message-handling process. The handle_message_with_context
-        // method then finishes processing and response creation.
-        let mut context = Context::new(received, received_info, response);
+        // Context structure, which holds a snapshot of the catalog,
+        // stores the Reader/Writer, and also keeps track of other
+        // information recorded during the message-handling process. The
+        // handle_message_with_context method then finishes processing
+        // and response creation.
+        let catalog = self.catalog();
+        let mut context = Context::new(&catalog, received, received_info, response);
         self.handle_message_with_context(&mut context);
 
         // The final step is to apply response rate-limiting (RRL) if
@@ -322,14 +341,17 @@ pub enum Response {
 /// Contains data involved in DNS message-handling. This includes the
 /// received message and the response under construction, as well as
 /// other data set or consumed at different stages of the process.
-struct Context<'s, 'b> {
+struct Context<'c, 'b> {
+    // Snapshot of the catalog at the beginning of processing:
+    catalog: &'c Catalog,
+
     // Information on the received message:
     received: Reader<'b>,
     received_info: ReceivedInfo,
     question: Option<Question>,
 
     // Data recorded during processing:
-    source_of_synthesis: Option<&'s Name>,
+    source_of_synthesis: Option<&'c Name>,
 
     // Information on the response:
     response: Writer<'b>,
@@ -337,10 +359,16 @@ struct Context<'s, 'b> {
     send_response: bool,
 }
 
-impl<'s, 'b> Context<'s, 'b> {
+impl<'c, 'b> Context<'c, 'b> {
     /// Creates a new `Context`.
-    fn new(received: Reader<'b>, received_info: ReceivedInfo, response: Writer<'b>) -> Self {
+    fn new(
+        catalog: &'c Catalog,
+        received: Reader<'b>,
+        received_info: ReceivedInfo,
+        response: Writer<'b>,
+    ) -> Self {
         Self {
+            catalog,
             received,
             received_info,
             question: None,
