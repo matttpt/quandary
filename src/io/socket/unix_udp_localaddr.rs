@@ -31,7 +31,7 @@ use nix::unistd::close;
 use super::UdpSocketApi;
 
 /// A UDP socket implementation for Unix systems with local address
-/// selection support. This currently supports only Linux.
+/// selection support. This currently works on Linux and NetBSD.
 pub struct UdpSocket {
     data: Arc<UdpSocketSharedData>,
     cmsg_buf: Vec<u8>,
@@ -93,7 +93,7 @@ impl UdpSocketApi for UdpSocket {
         let set_recv_dest_addr_sockopt_result = if addr.is_ipv6() {
             setsockopt(fd, sockopt::Ipv6RecvPacketInfo, &true)
         } else {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "netbsd"))]
             setsockopt(fd, sockopt::Ipv4PacketInfo, &true)
         };
         if let Err(e) = set_recv_dest_addr_sockopt_result {
@@ -186,7 +186,7 @@ fn make_cmsg_buf(ipv6: bool) -> Vec<u8> {
     if ipv6 {
         cmsg_space!(in6_pktinfo)
     } else {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "netbsd"))]
         cmsg_space!(in_pktinfo)
     }
 }
@@ -242,7 +242,7 @@ fn extract_dest_addr(ipv6: bool, cmsgs: CmsgIterator) -> io::Result<IpAddr> {
                 return Ok(IpAddr::V6(Ipv6Addr::from(info.ipi6_addr.s6_addr)));
             }
         } else {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "netbsd"))]
             if let ControlMessageOwned::Ipv4PacketInfo(info) = cmsg {
                 return Ok(IpAddr::V4(Ipv4Addr::from(u32::from_be(
                     info.ipi_addr.s_addr,
@@ -273,15 +273,23 @@ fn make_in6_pktinfo(src: IpAddr) -> io::Result<in6_pktinfo> {
 }
 
 /// Converts a Rust [`IpAddr`] into an [`in_pktinfo`].
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "netbsd"))]
 fn make_in_pktinfo(src: IpAddr) -> io::Result<in_pktinfo> {
     match src {
+        #[cfg(target_os = "linux")]
         IpAddr::V4(src) => Ok(in_pktinfo {
             ipi_ifindex: 0,
             ipi_spec_dst: in_addr {
                 s_addr: u32::from(src).to_be(),
             },
             ipi_addr: in_addr { s_addr: 0 },
+        }),
+        #[cfg(target_os = "netbsd")]
+        IpAddr::V4(src) => Ok(in_pktinfo {
+            ipi_ifindex: 0,
+            ipi_addr: in_addr {
+                s_addr: u32::from(src).to_be(),
+            },
         }),
         IpAddr::V6(_) => Err(Error::new(
             ErrorKind::InvalidInput,

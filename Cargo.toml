@@ -17,7 +17,7 @@ slab = "0.4"
 [target."cfg(unix)".dependencies]
 nix = { version = "0.24", default-features = false, features = ["poll"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "netbsd"))'.dependencies]
 libc = "0.2"
 nix = { version = "0.24", default-features = false, features = ["net", "socket", "uio"] }
 
