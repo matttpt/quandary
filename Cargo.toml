@@ -8,11 +8,36 @@ edition = "2021"
 codegen-units = 1
 lto = true
 
+[[bin]]
+name = "quandaryd"
+required-features = ["binary"]
+
+[features]
+default = ["binary"]
+binary = [
+    "dep:anyhow",
+    "dep:clap",
+    "dep:env_logger",
+    "dep:paste",
+    "dep:serde",
+    "dep:signal-hook",
+    "dep:toml",
+]
+
 [dependencies]
 arrayvec = "0.7"
 log = "0.4"
 rand = "0.8"
 slab = "0.4"
+
+# Optional dependencies for the binary:
+anyhow = { version = "1.0", optional = true }
+clap = { version = "3.2", optional = true, features = ["derive"] }
+env_logger = { version = "0.9", optional = true }
+paste = { version = "1.0", optional = true }
+serde = { version = "1.0", optional = true, features = ["derive"] }
+signal-hook = { version = "0.3", optional = true }
+toml = { version = "0.5", optional = true }
 
 [target."cfg(unix)".dependencies]
 nix = { version = "0.24", default-features = false, features = ["poll"] }
