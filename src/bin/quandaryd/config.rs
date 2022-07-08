@@ -21,7 +21,7 @@ use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use log::Level::Debug;
 use log::{debug, log_enabled};
 use paste::paste;
@@ -41,8 +41,22 @@ use crate::args::RunArgs;
 
 /// Loads the server configuration from the file given by `path`.
 pub fn load_from_path(path: impl AsRef<Path>) -> Result<Config> {
-    let raw_config = fs::read(path).context("failed to read the configuration file")?;
-    let config = toml::from_slice(&raw_config).context("failed to parse the configuration file")?;
+    let dir = match path.as_ref().parent() {
+        Some(p) => p,
+        None => return Err(anyhow!("the configuration file path has no parent")),
+    };
+    let raw_config = fs::read(path.as_ref()).context("failed to read the configuration file")?;
+    let mut config: Config =
+        toml::from_slice(&raw_config).context("failed to parse the configuration file")?;
+
+    // When loading the configuration from a path, all zone file paths
+    // are interpreted relative to the configuration file's directory.
+    for zone_config in &mut config.zones {
+        if zone_config.path.is_relative() {
+            zone_config.path = dir.join(&zone_config.path);
+        }
+    }
+
     log_config_summary(&config);
     Ok(config)
 }
