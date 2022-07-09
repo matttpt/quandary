@@ -284,6 +284,7 @@ fn default_io_provider_config() -> IoProviderConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
+    pub edns_udp_payload_size: Option<u16>,
     pub rrl: Option<RrlConfig>,
 }
 

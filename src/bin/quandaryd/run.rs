@@ -139,6 +139,13 @@ fn try_running(run_args: RunArgs) -> Result<()> {
 }
 
 fn configure_server(server: &mut Server, config: &ServerConfig) -> Result<()> {
+    // Set the EDNS UDP payload size if it's configured.
+    if let Some(size) = config.edns_udp_payload_size {
+        server
+            .set_edns_udp_payload_size(size)
+            .context("failed to set the EDNS UDP payload size")?;
+    }
+
     // Configure response rate-limiting (RRL) if it's enabled.
     if let Some(ref rrl_config) = config.rrl {
         configure_rrl(server, rrl_config).context("failed to configure RRL")?;
