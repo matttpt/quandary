@@ -322,8 +322,9 @@ fn run_udp_worker(
     server: &Arc<Server>,
     mut socket: UdpSocket,
 ) -> io::Result<()> {
-    let mut received_buf: [u8; 512] = [0; 512];
-    let mut response_buf: [u8; 512] = [0; 512];
+    let udp_payload_size = server.edns_udp_payload_size() as usize;
+    let mut received_buf = vec![0; udp_payload_size];
+    let mut response_buf = vec![0; udp_payload_size];
 
     loop {
         if group.is_shutting_down() {

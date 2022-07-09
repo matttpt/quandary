@@ -17,6 +17,7 @@
 //! The [`Server`] structure is the heart of this module; see its
 //! documentation for details.
 
+use std::fmt;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, RwLock};
 
@@ -52,14 +53,25 @@ pub use rrl::{RrlParamError, RrlParams};
 /// created to serve a [`Catalog`] with [`Server::new`].
 pub struct Server {
     catalog: RwLock<Arc<Catalog>>,
+    edns_udp_payload_size: u16,
     rrl: Option<Rrl>,
 }
 
 impl Server {
     /// Creates a new `Server` that will serve the provided [`Catalog`].
+    ///
+    /// The default EDNS UDP payload size used is 1,232 octets. This is
+    /// the safe default recommended for DNS Flag Day 2020, since 1,232
+    /// (DNS message) + 8 (UDP header) + 40 (IPv6 header) = 1,280, the
+    /// minimum MTU for IPv6. It should therefore avoid IP packet
+    /// fragmentation on almost all present-day networks.
+    ///
+    /// By default, RRL is disabled. However, public servers should
+    /// consider enabling it.
     pub fn new(catalog: Arc<Catalog>) -> Self {
         Self {
             catalog: RwLock::new(catalog),
+            edns_udp_payload_size: 1232,
             rrl: None,
         }
     }
@@ -77,6 +89,24 @@ impl Server {
         *self.catalog.write().unwrap() = catalog;
     }
 
+    /// Returns the maximum UDP payload size that this `Server` will use
+    /// with EDNS messages.
+    pub fn edns_udp_payload_size(&self) -> u16 {
+        self.edns_udp_payload_size
+    }
+
+    /// Sets the maximum UDP payload size that this `Server` will use
+    /// with EDNS messages. This must be at least 512 octets (the
+    /// maximum UDP payload size in unextended DNS).
+    pub fn set_edns_udp_payload_size(&mut self, size: u16) -> Result<(), InvalidPayloadSizeError> {
+        if size >= 512 {
+            self.edns_udp_payload_size = size;
+            Ok(())
+        } else {
+            Err(InvalidPayloadSizeError)
+        }
+    }
+
     /// Configures response rate-limiting for this `Server`. If passed
     /// `None`, then rate-limiting is disabled.
     pub fn set_rrl_params(&mut self, rrl_params: Option<RrlParams>) {
@@ -89,12 +119,14 @@ impl Server {
     /// `received_buf` contains the message received, and `received_info`
     /// provides additional information about it (see [`ReceivedInfo`]).
     /// `response_buf` is a buffer into which a response message may be
-    /// serialized. Its length is interpreted as the maximum size of a
-    /// DNS message the caller is willing to send. To comply with the
-    /// DNS specification, it should be at least 512 octets long for UDP
-    /// transport. For TCP transport, the maximum possible size (65,535
-    /// octets) should be used. If the buffer is not long enough to hold
-    /// a DNS message header, then this method will panic.
+    /// serialized. The caller must take care that these buffers are
+    /// large enough. For UDP transport, the caller must be able to send
+    /// and receive messages as large as the maximum configured size
+    /// (use [`Server::edns_udp_payload_size`] to determine what this
+    /// is). For TCP transport, the caller must be able to send and
+    /// receive messages as large as 65,535 octets. In particular, if
+    /// `response_buf` is not large enough to meet these requirements,
+    /// then this method will panic.
     ///
     /// A [`Response`] is returned, signifying whether a response is to
     /// be sent and, if so, how long the response message written into
@@ -105,6 +137,15 @@ impl Server {
         received_info: ReceivedInfo,
         response_buf: &mut [u8],
     ) -> Response {
+        // Enforce our requirements on the size of response_buf.
+        let min_response_buf_size = match received_info.transport {
+            Transport::Tcp => u16::MAX as usize,
+            Transport::Udp => self.edns_udp_payload_size as usize,
+        };
+        if response_buf.len() < min_response_buf_size {
+            panic!("the response buffer is not large enough");
+        }
+
         // Construct a Reader, while ignoring messages that do not
         // contain a full DNS header.
         let received = match Reader::try_from(received_buf) {
@@ -123,8 +164,7 @@ impl Server {
             Transport::Tcp => u16::MAX as usize,
             Transport::Udp => 512,
         };
-        let mut response = Writer::new(response_buf, response_size_limit)
-            .expect("failed to start response (buffer too short)");
+        let mut response = Writer::new(response_buf, response_size_limit).unwrap();
         response.set_id(received.id());
         response.set_qr(true);
         response.set_opcode(received.opcode());
@@ -271,7 +311,11 @@ impl Server {
                 // Once we find an OPT record, we produce an EDNS
                 // response, even if the OPT record is invalid (see
                 // RFC 6891 § 7).
-                if context.response.set_edns(512).is_err() {
+                if context
+                    .response
+                    .set_edns(self.edns_udp_payload_size)
+                    .is_err()
+                {
                     context.response.set_rcode(Rcode::SERVFAIL);
                     return;
                 }
@@ -282,6 +326,18 @@ impl Server {
                         return;
                     }
                 };
+
+                // For UDP transport, increase the message size limit if
+                // possible. Note that Response::increase_limit never
+                // *decreases* the limit, so we comply with
+                // RFC 6891 § 6.2.5's requirement to treat payload sizes
+                // less than 512 octets as equal to 512 octets.
+                if context.received_info.transport == Transport::Udp {
+                    let their_limit = u16::from(opt_rr.class);
+                    let negotiated_limit = their_limit.min(self.edns_udp_payload_size);
+                    context.response.increase_limit(negotiated_limit as usize);
+                }
+
                 if let Some(rcode) = validate_opt(&opt_rr) {
                     context
                         .response
@@ -432,6 +488,23 @@ fn validate_opt(opt_rr: &ReadRr) -> Option<ExtendedRcode> {
 }
 
 ////////////////////////////////////////////////////////////////////////
+// PUBLIC ERRORS                                                      //
+////////////////////////////////////////////////////////////////////////
+
+/// An error returned when an invalid EDNS UDP payload size is passed
+/// to [`Server::set_edns_udp_payload_size`].
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct InvalidPayloadSizeError;
+
+impl fmt::Display for InvalidPayloadSizeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("invalid EDNS UDP payload size (the minimum is 512 octets)")
+    }
+}
+
+impl std::error::Error for InvalidPayloadSizeError {}
+
+////////////////////////////////////////////////////////////////////////
 // PROCESSING ERRORS                                                  //
 ////////////////////////////////////////////////////////////////////////
 
@@ -463,6 +536,30 @@ type ProcessingResult<T> = Result<T, ProcessingError>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_edns_udp_payload_size_enforces_min() {
+        let mut server = Server::new(Arc::new(Catalog::new()));
+        assert!(server.set_edns_udp_payload_size(256).is_err());
+    }
+
+    #[test]
+    #[should_panic(expected = "the response buffer is not large enough")]
+    fn handle_message_rejects_short_buffers_for_tcp() {
+        let server = Server::new(Arc::new(Catalog::new()));
+        let received_info = ReceivedInfo::new(Ipv4Addr::LOCALHOST.into(), Transport::Tcp);
+        let mut not_quite_large_enough = [0; u16::MAX as usize - 1];
+        server.handle_message(&[], received_info, &mut not_quite_large_enough);
+    }
+
+    #[test]
+    #[should_panic(expected = "the response buffer is not large enough")]
+    fn handle_message_rejects_short_buffers_for_udp() {
+        let server = Server::new(Arc::new(Catalog::new()));
+        let received_info = ReceivedInfo::new(Ipv4Addr::LOCALHOST.into(), Transport::Udp);
+        let mut not_quite_large_enough = vec![0; server.edns_udp_payload_size() as usize - 1];
+        server.handle_message(&[], received_info, &mut not_quite_large_enough);
+    }
 
     #[test]
     fn received_info_constructor_canonicalizes_ipv4_mapped_ipv6_addrs() {
