@@ -98,7 +98,7 @@ use std::rc::Rc;
 
 use crate::class::Class;
 use crate::name::Name;
-use crate::rr::{Ttl, Type};
+use crate::rr::{Rdata, Ttl, Type};
 
 mod character_string;
 mod directive;
@@ -156,7 +156,7 @@ pub struct ParsedRr {
     pub ttl: Ttl,
     pub class: Class,
     pub rr_type: Type,
-    pub rdata: Vec<u8>,
+    pub rdata: Box<Rdata>,
 }
 
 ////////////////////////////////////////////////////////////////////////

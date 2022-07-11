@@ -21,7 +21,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use super::{Error, ErrorKind, FieldOrEol, ParsedRr, Parser, Position, Result};
 use crate::class::Class;
 use crate::name::Name;
-use crate::rr::rdata::{self, Rdata, RdataTooLongError, TxtBuilder};
+use crate::rr::rdata::{Rdata, RdataTooLongError, TxtBuilder};
 use crate::rr::{Ttl, Type};
 use crate::util::ascii_hex_digit_to_nibble;
 
@@ -218,7 +218,7 @@ impl<S: Read> Parser<S> {
     /// because the error message generation is handled in the callee,
     /// since the message depends on `rr_type`. Furthermore, this method
     /// expects and consumes a line ending after the RDATA.
-    fn parse_rdata(&mut self, rr_type: Type) -> Result<Vec<u8>> {
+    fn parse_rdata(&mut self, rr_type: Type) -> Result<Box<Rdata>> {
         match rr_type {
             Type::NS
             | Type::MD
@@ -261,35 +261,29 @@ impl<S: Read> Parser<S> {
     }
 
     /// Parses RDATA for records consisting of a single domain name.
-    fn parse_name_rdata(&mut self) -> Result<Vec<u8>> {
+    fn parse_name_rdata(&mut self) -> Result<Box<Rdata>> {
         if self.check_backslash_hash(ErrorKind::ExpectedNameOrBh)? {
             self.parse_unknown_rdata_with_validation(Name::validate_uncompressed_all)
         } else {
             let name = self.parse_name()?;
             self.reader.expect_eol()?;
-
-            let mut rdata = Vec::new();
-            rdata.extend_from_slice(name.wire_repr());
-            Ok(rdata)
+            Ok(<&Rdata>::try_from(name.wire_repr()).unwrap().to_owned())
         }
     }
 
     /// Parses RDATA for A records.
-    fn parse_a_rdata(&mut self) -> Result<Vec<u8>> {
+    fn parse_a_rdata(&mut self) -> Result<Box<Rdata>> {
         if self.check_backslash_hash(ErrorKind::ExpectedIpv4OrBh)? {
             self.parse_unknown_rdata_with_validation(Rdata::validate_as_a)
         } else {
             let ipv4: Ipv4Addr = self.reader.read_field(ErrorKind::InvalidIpv4)?;
             self.reader.expect_eol()?;
-
-            let mut rdata = Vec::new();
-            rdata::serialize_a(ipv4, &mut rdata);
-            Ok(rdata)
+            Ok(Rdata::new_a(ipv4))
         }
     }
 
     /// Parses RDATA for SOA records.
-    fn parse_soa_rdata(&mut self) -> Result<Vec<u8>> {
+    fn parse_soa_rdata(&mut self) -> Result<Box<Rdata>> {
         if self.check_backslash_hash(ErrorKind::ExpectedNameOrBh)? {
             self.parse_unknown_rdata_with_validation(Rdata::validate_as_soa)
         } else {
@@ -307,12 +301,9 @@ impl<S: Read> Parser<S> {
             self.reader.skip_to_next_field(ErrorKind::ExpectedU32)?;
             let minimum = self.reader.read_field(ErrorKind::InvalidInt)?;
             self.reader.expect_eol()?;
-
-            let mut rdata = Vec::new();
-            rdata::serialize_soa(
-                &mname, &rname, serial, refresh, retry, expire, minimum, &mut rdata,
-            );
-            Ok(rdata)
+            Ok(Rdata::new_soa(
+                &mname, &rname, serial, refresh, retry, expire, minimum,
+            ))
         }
     }
 
@@ -320,7 +311,7 @@ impl<S: Read> Parser<S> {
     ///
     /// Note that mneumonics for port numbers are not supported, and the
     /// only support mneumonics for IP protocols are `TCP` and `UDP`.
-    fn parse_wks_rdata(&mut self) -> Result<Vec<u8>> {
+    fn parse_wks_rdata(&mut self) -> Result<Box<Rdata>> {
         if self.check_backslash_hash(ErrorKind::ExpectedIpv4OrBh)? {
             self.parse_unknown_rdata_with_validation(Rdata::validate_as_wks)
         } else {
@@ -348,14 +339,12 @@ impl<S: Read> Parser<S> {
                 ports.push(port);
             }
 
-            let mut rdata = Vec::new();
-            rdata::serialize_wks(address, protocol, &ports, &mut rdata);
-            Ok(rdata)
+            Ok(Rdata::new_wks(address, protocol, &ports))
         }
     }
 
     /// Parses RDATA for HINFO records.
-    fn parse_hinfo_rdata(&mut self) -> Result<Vec<u8>> {
+    fn parse_hinfo_rdata(&mut self) -> Result<Box<Rdata>> {
         if self.check_backslash_hash(ErrorKind::ExpectedCharacterStringOrBh)? {
             self.parse_unknown_rdata_with_validation(Rdata::validate_as_hinfo)
         } else {
@@ -364,15 +353,12 @@ impl<S: Read> Parser<S> {
                 .skip_to_next_field(ErrorKind::ExpectedCharacterString)?;
             let os = self.parse_character_string()?;
             self.reader.expect_eol()?;
-
-            let mut rdata = Vec::new();
-            rdata::serialize_hinfo(&cpu, &os, &mut rdata);
-            Ok(rdata)
+            Ok(Rdata::new_hinfo(&cpu, &os))
         }
     }
 
     /// Parses RDATA for MINFO records.
-    fn parse_minfo_rdata(&mut self) -> Result<Vec<u8>> {
+    fn parse_minfo_rdata(&mut self) -> Result<Box<Rdata>> {
         if self.check_backslash_hash(ErrorKind::ExpectedNameOrBh)? {
             self.parse_unknown_rdata_with_validation(Rdata::validate_as_minfo)
         } else {
@@ -380,15 +366,12 @@ impl<S: Read> Parser<S> {
             self.reader.skip_to_next_field(ErrorKind::ExpectedName)?;
             let emailbx = self.parse_name()?;
             self.reader.expect_eol()?;
-
-            let mut rdata = Vec::new();
-            rdata::serialize_minfo(&rmailbx, &emailbx, &mut rdata);
-            Ok(rdata)
+            Ok(Rdata::new_minfo(&rmailbx, &emailbx))
         }
     }
 
     /// Parses RDATA for MX records.
-    fn parse_mx_rdata(&mut self) -> Result<Vec<u8>> {
+    fn parse_mx_rdata(&mut self) -> Result<Box<Rdata>> {
         if self.check_backslash_hash(ErrorKind::ExpectedU16OrBh)? {
             self.parse_unknown_rdata_with_validation(Rdata::validate_as_mx)
         } else {
@@ -396,15 +379,12 @@ impl<S: Read> Parser<S> {
             self.reader.skip_to_next_field(ErrorKind::ExpectedName)?;
             let exchange = self.parse_name()?;
             self.reader.expect_eol()?;
-
-            let mut rdata = Vec::new();
-            rdata::serialize_mx(preference, &exchange, &mut rdata);
-            Ok(rdata)
+            Ok(Rdata::new_mx(preference, &exchange))
         }
     }
 
     /// Parses RDATA for TXT records.
-    fn parse_txt_rdata(&mut self) -> Result<Vec<u8>> {
+    fn parse_txt_rdata(&mut self) -> Result<Box<Rdata>> {
         if self.check_backslash_hash(ErrorKind::ExpectedCharacterStringOrBh)? {
             self.parse_unknown_rdata_with_validation(Rdata::validate_as_txt)
         } else {
@@ -423,26 +403,23 @@ impl<S: Read> Parser<S> {
                     break;
                 }
             }
-            Ok(rdata)
+            Ok(rdata.try_into().unwrap())
         }
     }
 
     /// Parses RDATA for AAAA records.
-    fn parse_aaaa_rdata(&mut self) -> Result<Vec<u8>> {
+    fn parse_aaaa_rdata(&mut self) -> Result<Box<Rdata>> {
         if self.check_backslash_hash(ErrorKind::ExpectedIpv6OrBh)? {
             self.parse_unknown_rdata_with_validation(Rdata::validate_as_aaaa)
         } else {
             let ipv6: Ipv6Addr = self.reader.read_field(ErrorKind::InvalidIpv6)?;
             self.reader.expect_eol()?;
-
-            let mut rdata = Vec::new();
-            rdata::serialize_aaaa(ipv6, &mut rdata);
-            Ok(rdata)
+            Ok(Rdata::new_aaaa(ipv6))
         }
     }
 
     /// Parses RDATA for SRV records.
-    fn parse_srv_rdata(&mut self) -> Result<Vec<u8>> {
+    fn parse_srv_rdata(&mut self) -> Result<Box<Rdata>> {
         if self.check_backslash_hash(ErrorKind::ExpectedU16OrBh)? {
             self.parse_unknown_rdata_with_validation(Rdata::validate_as_srv)
         } else {
@@ -454,17 +431,14 @@ impl<S: Read> Parser<S> {
             self.reader.skip_to_next_field(ErrorKind::ExpectedName)?;
             let target = self.parse_name()?;
             self.reader.expect_eol()?;
-
-            let mut rdata = Vec::new();
-            rdata::serialize_srv(priority, weight, port, &target, &mut rdata);
-            Ok(rdata)
+            Ok(Rdata::new_srv(priority, weight, port, &target))
         }
     }
 
     /// Parses RDATA using the \# format. This expects that the caller
     /// has already consumed the \# marker and starts by skipping to the
     /// next field in the format (the RDATA length).
-    fn parse_unknown_rdata(&mut self) -> Result<Vec<u8>> {
+    fn parse_unknown_rdata(&mut self) -> Result<Box<Rdata>> {
         self.parse_unknown_rdata_impl().map(|(_, v)| v)
     }
 
@@ -472,19 +446,18 @@ impl<S: Read> Parser<S> {
     /// additionally validated with `validator` once it is parsed. If
     /// validation fails, an error of kind
     /// [`ErrorKind::InvalidRdataForType`] is returned.
-    fn parse_unknown_rdata_with_validation<V, T, R, E>(&mut self, validator: V) -> Result<Vec<u8>>
+    fn parse_unknown_rdata_with_validation<V, T, R, E>(
+        &mut self,
+        validator: V,
+    ) -> Result<Box<Rdata>>
     where
         V: FnOnce(&T) -> std::result::Result<R, E>,
         T: ?Sized,
         Rdata: Borrow<T>,
     {
-        let (hex_digits_position, rdata_buf) = self.parse_unknown_rdata_impl()?;
-
-        // NOTE: parse_unknown_rdata_impl rejects RDATA that is too
-        // long, so the unwrap should not fail.
-        let rdata = <&Rdata>::try_from(rdata_buf.as_slice()).unwrap();
-        if validator(rdata.borrow()).is_ok() {
-            Ok(rdata_buf)
+        let (hex_digits_position, rdata) = self.parse_unknown_rdata_impl()?;
+        if validator(rdata.as_ref().borrow()).is_ok() {
+            Ok(rdata)
         } else {
             Err(Error::new(
                 hex_digits_position,
@@ -498,14 +471,14 @@ impl<S: Read> Parser<S> {
     /// digits (or the position immediately after the RDATA length
     /// field) for error reporting in
     /// [`Parser::parse_unknown_rdata_with_validation`].
-    fn parse_unknown_rdata_impl(&mut self) -> Result<(Position, Vec<u8>)> {
+    fn parse_unknown_rdata_impl(&mut self) -> Result<(Position, Box<Rdata>)> {
         self.reader
             .skip_to_next_field(ErrorKind::ExpectedRdataLen)?;
         let len = self
             .reader
-            .read_field::<u16, _>(ErrorKind::InvalidRdataLen)? as usize;
+            .read_field::<u16, _>(ErrorKind::InvalidRdataLen)?;
         let result = if len == 0 {
-            (self.reader.position(), Vec::new())
+            (self.reader.position(), Rdata::empty().to_owned())
         } else {
             self.reader
                 .skip_to_next_field(ErrorKind::ExpectedHexRdata)?;
@@ -519,14 +492,15 @@ impl<S: Read> Parser<S> {
 
     /// Parses a string of hexadecimal digits for a total of `len`
     /// octets.
-    fn parse_unknown_rdata_hex_digits(&mut self, len: usize) -> Result<Vec<u8>> {
+    fn parse_unknown_rdata_hex_digits(&mut self, len: u16) -> Result<Box<Rdata>> {
+        let len = len as usize;
         let mut rdata = Vec::with_capacity(len);
         while rdata.len() < len {
             let high_nibble = self.parse_ascii_hex_digit()?;
             let low_nibble = self.parse_ascii_hex_digit()?;
             rdata.push((high_nibble << 4) | low_nibble);
         }
-        Ok(rdata)
+        Ok(rdata.try_into().unwrap())
     }
 
     /// Parses a single ASCII hexadecimal digit.

@@ -89,7 +89,7 @@ fn load_and_validate_zone(zone_config: &ZoneConfig) -> Result<Zone> {
             record.rr_type,
             record.class,
             record.ttl,
-            record.rdata.as_slice().try_into().unwrap(),
+            &record.rdata,
         )
         .with_context(|| {
             format!(
