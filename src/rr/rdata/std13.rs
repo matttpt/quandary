@@ -98,6 +98,12 @@ impl ToOwned for CharacterString {
     }
 }
 
+impl Clone for Box<CharacterString> {
+    fn clone(&self) -> Self {
+        self.as_ref().to_owned()
+    }
+}
+
 impl TryFrom<Vec<u8>> for Box<CharacterString> {
     type Error = CharacterStringTooLongError;
 

@@ -252,6 +252,12 @@ impl ToOwned for Rdata {
     }
 }
 
+impl Clone for Box<Rdata> {
+    fn clone(&self) -> Self {
+        self.as_ref().to_owned()
+    }
+}
+
 impl TryFrom<Vec<u8>> for Box<Rdata> {
     type Error = RdataTooLongError;
 
