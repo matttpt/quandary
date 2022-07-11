@@ -34,6 +34,13 @@ pub fn serialize_srv(priority: u16, weight: u16, port: u16, target: &Name, buf: 
 }
 
 impl Rdata {
+    /// Serializes an SRV record into a new boxed [`Rdata`].
+    pub fn new_srv(priority: u16, weight: u16, port: u16, target: &Name) -> Box<Self> {
+        let mut buf = Vec::with_capacity(6 + target.wire_repr().len());
+        serialize_srv(priority, weight, port, target, &mut buf);
+        buf.try_into().unwrap()
+    }
+
     /// Validates this [`Rdata`] for correctness, assuming that it is of
     /// type SRV.
     pub fn validate_as_srv(&self) -> Result<(), ReadRdataError> {

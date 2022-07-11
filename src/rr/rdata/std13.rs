@@ -160,6 +160,13 @@ pub fn serialize_a(address: Ipv4Addr, buf: &mut Vec<u8>) {
 }
 
 impl Rdata {
+    /// Serializes an A record into a new boxed [`Rdata`].
+    pub fn new_a(address: Ipv4Addr) -> Box<Self> {
+        let mut buf = Vec::with_capacity(4);
+        serialize_a(address, &mut buf);
+        buf.try_into().unwrap()
+    }
+
     /// Validates this [`Rdata`] for correctness, assuming that it is of
     /// type A.
     pub fn validate_as_a(&self) -> Result<(), ReadRdataError> {
@@ -205,6 +212,23 @@ pub fn serialize_soa(
 }
 
 impl Rdata {
+    /// Serializes an SOA record into a new boxed [`Rdata`].
+    pub fn new_soa(
+        mname: &Name,
+        rname: &Name,
+        serial: u32,
+        refresh: u32,
+        retry: u32,
+        expire: u32,
+        minimum: u32,
+    ) -> Box<Self> {
+        let mut buf = Vec::with_capacity(20 + mname.wire_repr().len() + rname.wire_repr().len());
+        serialize_soa(
+            mname, rname, serial, refresh, retry, expire, minimum, &mut buf,
+        );
+        buf.try_into().unwrap()
+    }
+
     /// Validates this [`Rdata`] for correctness, assuming that it is of
     /// type SOA.
     pub fn validate_as_soa(&self) -> Result<(), ReadRdataError> {
@@ -284,6 +308,13 @@ pub fn serialize_wks(address: Ipv4Addr, protocol: u8, ports: &[u16], buf: &mut V
 }
 
 impl Rdata {
+    /// Serializes a WKS record into a new boxed [`Rdata`].
+    pub fn new_wks(address: Ipv4Addr, protocol: u8, ports: &[u16]) -> Box<Self> {
+        let mut buf = Vec::new();
+        serialize_wks(address, protocol, ports, &mut buf);
+        buf.try_into().unwrap()
+    }
+
     /// Validates this [`Rdata`] for correctness, assuming that it is of
     /// type WKS.
     pub fn validate_as_wks(&self) -> Result<(), ReadRdataError> {
@@ -309,6 +340,13 @@ pub fn serialize_hinfo(cpu: &CharacterString, os: &CharacterString, buf: &mut Ve
 }
 
 impl Rdata {
+    /// Serializes an HINFO record into a new boxed [`Rdata`].
+    pub fn new_hinfo(cpu: &CharacterString, os: &CharacterString) -> Box<Self> {
+        let mut buf = Vec::with_capacity(2 + cpu.len() + os.len());
+        serialize_hinfo(cpu, os, &mut buf);
+        buf.try_into().unwrap()
+    }
+
     /// Validates this [`Rdata`] for correctness, assuming that it is of
     /// type HINFO.
     pub fn validate_as_hinfo(&self) -> Result<(), ReadRdataError> {
@@ -334,6 +372,13 @@ pub fn serialize_minfo(rmailbx: &Name, emailbx: &Name, buf: &mut Vec<u8>) {
 }
 
 impl Rdata {
+    /// Serializes an MINFO record into a new boxed [`Rdata`].
+    pub fn new_minfo(rmailbx: &Name, emailbx: &Name) -> Box<Self> {
+        let mut buf = Vec::with_capacity(rmailbx.wire_repr().len() + emailbx.wire_repr().len());
+        serialize_minfo(rmailbx, emailbx, &mut buf);
+        buf.try_into().unwrap()
+    }
+
     /// Validates this [`Rdata`] for correctness, assuming that it is of
     /// type MINFO.
     pub fn validate_as_minfo(&self) -> Result<(), ReadRdataError> {
@@ -389,6 +434,13 @@ pub fn serialize_mx(preference: u16, name: &Name, buf: &mut Vec<u8>) {
 }
 
 impl Rdata {
+    /// Serializes an MX record into a new boxed [`Rdata`].
+    pub fn new_mx(preference: u16, name: &Name) -> Box<Self> {
+        let mut buf = Vec::with_capacity(2 + name.wire_repr().len());
+        serialize_mx(preference, name, &mut buf);
+        buf.try_into().unwrap()
+    }
+
     /// Validates this [`Rdata`] for correctness, assuming that it is of
     /// type MX.
     pub fn validate_as_mx(&self) -> Result<(), ReadRdataError> {

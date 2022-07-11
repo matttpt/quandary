@@ -30,6 +30,13 @@ pub fn serialize_aaaa(address: Ipv6Addr, buf: &mut Vec<u8>) {
 }
 
 impl Rdata {
+    /// Serializes an AAAA record into a new boxed [`Rdata`].
+    pub fn new_aaaa(address: Ipv6Addr) -> Box<Self> {
+        let mut buf = Vec::with_capacity(16);
+        serialize_aaaa(address, &mut buf);
+        buf.try_into().unwrap()
+    }
+
     /// Validates this [`Rdata`] for correctness, assuming that it is of
     /// type AAAA.
     pub fn validate_as_aaaa(&self) -> Result<(), ReadRdataError> {
