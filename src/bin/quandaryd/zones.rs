@@ -81,7 +81,7 @@ fn load_and_validate_zone(zone_config: &ZoneConfig) -> Result<Zone> {
     let zone_file = File::open(&zone_config.path)
         .with_context(|| format!("failed to open {}", zone_config.path.display()))?;
 
-    for record in Parser::new(zone_file) {
+    for record in Parser::new(zone_file).records_only() {
         let record =
             record.with_context(|| format!("failed to parse {}", zone_config.path.display()))?;
         zone.add(

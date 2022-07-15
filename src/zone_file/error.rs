@@ -124,6 +124,7 @@ pub enum ErrorKind {
     EofBeforeCloseParen,
     EofInEscape,
     EofInQuotedCharacterString,
+    EofInQuotedIncludePath,
     EscapeNeedsThreeDigits,
     EscapeValueOutOfRange,
     ExpectedBackslashHash,
@@ -132,6 +133,7 @@ pub enum ErrorKind {
     ExpectedClassOrType,
     ExpectedEol,
     ExpectedHexRdata,
+    ExpectedIncludePath,
     ExpectedIpProto,
     ExpectedIpv4OrBh,
     ExpectedIpv6OrBh,
@@ -146,6 +148,8 @@ pub enum ErrorKind {
     ExpectedU16OrBh,
     ExpectedU32,
     FieldTooLong,
+    IncludeNotSupported,
+    IncludePathTooLong,
     InvalidClass(&'static str),
     InvalidHexDigit,
     InvalidInt(ParseIntError),
@@ -186,6 +190,9 @@ impl fmt::Display for ErrorKind {
             Self::EofInQuotedCharacterString => {
                 f.write_str("reached end of file in quoted <character-string>")
             }
+            Self::EofInQuotedIncludePath => {
+                f.write_str("reached end of file in quoted include path")
+            }
             Self::EscapeNeedsThreeDigits => {
                 f.write_str("invalid escape sequence: expected three decimal digits")
             }
@@ -200,6 +207,7 @@ impl fmt::Display for ErrorKind {
             Self::ExpectedClassOrType => f.write_str("expected a class or RR type"),
             Self::ExpectedEol => f.write_str("expected the end of the line"),
             Self::ExpectedHexRdata => f.write_str("expected hexadecimal RDATA"),
+            Self::ExpectedIncludePath => f.write_str("expected include path"),
             Self::ExpectedIpProto => {
                 f.write_str("expected an IP protocol (TCP, UDP, or an unsigned 8-bit integer)")
             }
@@ -216,6 +224,8 @@ impl fmt::Display for ErrorKind {
             Self::ExpectedU16OrBh => f.write_str("expected an unsigned 16-bit integer or \\#"),
             Self::ExpectedU32 => f.write_str("expected an unsigned 32-bit integer"),
             Self::FieldTooLong => f.write_str("field is too long to parse"),
+            Self::IncludeNotSupported => f.write_str("$INCLUDE is not supported"),
+            Self::IncludePathTooLong => f.write_str("include path is too long"),
             Self::InvalidClass(class_err) => class_err.fmt(f),
             Self::InvalidHexDigit => f.write_str("invalid hexadecimal digit"),
             Self::InvalidInt(ref int_err) => int_err.fmt(f),

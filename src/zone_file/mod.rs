@@ -15,12 +15,16 @@
 //! Parsing of the [RFC 1035 § 5] zone file format.
 //!
 //! This module provides the [`Parser`] structure, which accepts a
-//! stream implementing the [`Read`] trait and can subsequently be
+//! stream implementing the [`Read`] trait. It can subsequently be
 //! iterated over to read DNS records stored in [RFC 1035 § 5] format.
+//! It will also report any `$INCLUDE` directives in the file. To
+//! receive only records (treating `$INCLUDE` directives as an error),
+//! call [`Parser::records_only`], which converts the [`Parser`] into a
+//! [`RecordsOnly`] iterator.
 //!
 //! Errors (which may be I/O errors or syntax errors) are reported
 //! through the [`Error`] type. Iteration ends and parsing cannot be
-//! continued after an error is returned
+//! continued after an error is returned.
 //!
 //! ```
 //! use std::io::Cursor;
@@ -42,7 +46,7 @@
 //!     IN AAAA ::1
 //! "#;
 //!
-//! let mut parser = Parser::new(Cursor::new(ZONE_FILE));
+//! let mut parser = Parser::new(Cursor::new(ZONE_FILE)).records_only();
 //! assert_eq!(parser.next().unwrap().unwrap().rr_type, Type::SOA);
 //! assert_eq!(parser.next().unwrap().unwrap().rr_type, Type::NS);
 //! assert_eq!(parser.next().unwrap().unwrap().rr_type, Type::A);
@@ -119,8 +123,9 @@ use reader::{FieldOrEol, Position, Reader};
 /// A parser for [RFC 1035 § 5] DNS zone files.
 ///
 /// A [`Parser`] accepts a stream implementing [`Read`] and can then
-/// be iterated to read DNS records from the stream. See the
-/// [module level documentation](`super`) for details and example usage.
+/// be iterated to read DNS records and `$INCLUDE` directives from the
+/// stream. See the [module-level documentation](`super`) for details
+/// and example usage.
 ///
 /// [RFC 1035 § 5]: https://datatracker.ietf.org/doc/html/rfc1035#section-5
 pub struct Parser<S> {
@@ -148,7 +153,29 @@ struct Context {
     default_ttl: Option<Ttl>,
 }
 
-/// Resource record data as returned by [`Parser::next`].
+/// A line parsed from a zone file, as returned by [`Parser::next`].
+///
+/// This actually represents a logical line; if parentheses are used, it
+/// may be several physical lines in the file. Furthermore, only lines
+/// that require the caller's attention (records and `$INCLUDE`
+/// directives) are returned. Blank lines and `$TTL` directives, for
+/// instance, are processed internally and are not reported through this
+/// data type.
+#[derive(Clone, Debug)]
+pub enum Line {
+    Include(Include),
+    Record(ParsedRr),
+}
+
+/// A parsed `$INCLUDE` directive.
+#[derive(Clone, Debug)]
+pub struct Include {
+    pub line: usize,
+    pub path: Vec<u8>,
+    pub origin: Option<Rc<Name>>,
+}
+
+/// Parsed resource record data.
 #[derive(Clone, Debug)]
 pub struct ParsedRr {
     pub line: usize,
@@ -174,19 +201,28 @@ impl<S: Read> Parser<S> {
         }
     }
 
+    /// Converts this [`Parser`] into an iterator that produces only
+    /// resource records. Any `$INCLUDE` directives found will trigger
+    /// an ["include not supported"](`ErrorKind::IncludeNotSupported`)
+    /// error.
+    pub fn records_only(self) -> RecordsOnly<S> {
+        RecordsOnly { parser: self }
+    }
+
     /// An internal helper to parse a single line of a zone file.
-    fn parse_line(&mut self) -> Result<Option<ParsedRr>> {
+    fn parse_line(&mut self) -> Result<Option<Line>> {
         if self.reader.peek_octet()? == Some(b'$') {
-            self.parse_directive()?;
-            Ok(None)
+            self.parse_directive()
+                .map(|maybe_include| maybe_include.map(Line::Include))
         } else {
             self.parse_record_or_empty()
+                .map(|maybe_line| maybe_line.map(Line::Record))
         }
     }
 
-    /// An internal helper to parse lines until a line with a record is
-    /// found.
-    fn parse_lines_until_record(&mut self) -> Result<Option<ParsedRr>> {
+    /// An internal helper to parse lines until one with returnable data
+    /// is found.
+    fn parse_lines_until_returnable_data_found(&mut self) -> Result<Option<Line>> {
         while !self.reader.at_eof()? {
             if let Some(record) = self.parse_line()? {
                 return Ok(Some(record));
@@ -199,7 +235,7 @@ impl<S: Read> Parser<S> {
 }
 
 impl<S: Read> Iterator for Parser<S> {
-    type Item = Result<ParsedRr>;
+    type Item = Result<Line>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.error {
@@ -209,13 +245,48 @@ impl<S: Read> Iterator for Parser<S> {
             return None;
         }
 
-        match self.parse_lines_until_record() {
+        match self.parse_lines_until_returnable_data_found() {
             Ok(Some(record)) => Some(Ok(record)),
             Ok(None) => None,
             Err(e) => {
                 self.error = true;
                 Some(Err(e))
             }
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////
+// RECORDS-ONLY ITERATOR                                              //
+////////////////////////////////////////////////////////////////////////
+
+/// An iterator that parses only resource records from a zone file and
+/// returns an [error](`ErrorKind::IncludeNotSupported`) if an
+/// `$INCLUDE` directive is found. See [`Parser::records_only`].
+pub struct RecordsOnly<S> {
+    parser: Parser<S>,
+}
+
+impl<S: Read> Iterator for RecordsOnly<S> {
+    type Item = Result<ParsedRr>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.parser.next() {
+            Some(Ok(Line::Record(rr))) => Some(Ok(rr)),
+            Some(Ok(Line::Include(include))) => {
+                // We set the error flag on the underlying parser so
+                // that iteration ends.
+                self.parser.error = true;
+                Some(Err(Error::new(
+                    Position {
+                        line: include.line,
+                        column: 1,
+                    },
+                    ErrorKind::IncludeNotSupported,
+                )))
+            }
+            Some(Err(e)) => Some(Err(e)),
+            None => None,
         }
     }
 }
