@@ -124,7 +124,7 @@ use reader::{FieldOrEol, Position, Reader};
 ///
 /// A [`Parser`] accepts a stream implementing [`Read`] and can then
 /// be iterated to read DNS records and `$INCLUDE` directives from the
-/// stream. See the [module-level documentation](`super`) for details
+/// stream. See the [module-level documentation](`self`) for details
 /// and example usage.
 ///
 /// [RFC 1035 § 5]: https://datatracker.ietf.org/doc/html/rfc1035#section-5
