@@ -81,21 +81,21 @@ fn load_and_validate_zone(zone_config: &ZoneConfig) -> Result<Zone> {
     let zone_file = File::open(&zone_config.path)
         .with_context(|| format!("failed to open {}", zone_config.path.display()))?;
 
-    for record in Parser::new(zone_file).records_only() {
-        let record =
-            record.with_context(|| format!("failed to parse {}", zone_config.path.display()))?;
+    for line in Parser::new(zone_file).records_only() {
+        let line =
+            line.with_context(|| format!("failed to parse {}", zone_config.path.display()))?;
         zone.add(
-            &record.owner,
-            record.rr_type,
-            record.class,
-            record.ttl,
-            &record.rdata,
+            &line.record.owner,
+            line.record.rr_type,
+            line.record.class,
+            line.record.ttl,
+            &line.record.rdata,
         )
         .with_context(|| {
             format!(
                 "failed to add the record at {} line {} to the zone",
                 zone_config.path.display(),
-                record.line,
+                line.number,
             )
         })?;
     }

@@ -47,10 +47,10 @@
 //! "#;
 //!
 //! let mut parser = Parser::new(Cursor::new(ZONE_FILE)).records_only();
-//! assert_eq!(parser.next().unwrap().unwrap().rr_type, Type::SOA);
-//! assert_eq!(parser.next().unwrap().unwrap().rr_type, Type::NS);
-//! assert_eq!(parser.next().unwrap().unwrap().rr_type, Type::A);
-//! assert_eq!(parser.next().unwrap().unwrap().rr_type, Type::AAAA);
+//! assert_eq!(parser.next().unwrap().unwrap().record.rr_type, Type::SOA);
+//! assert_eq!(parser.next().unwrap().unwrap().record.rr_type, Type::NS);
+//! assert_eq!(parser.next().unwrap().unwrap().record.rr_type, Type::A);
+//! assert_eq!(parser.next().unwrap().unwrap().record.rr_type, Type::AAAA);
 //! assert!(parser.next().is_none());
 //! ```
 //!
@@ -162,7 +162,14 @@ struct Context {
 /// instance, are processed internally and are not reported through this
 /// data type.
 #[derive(Clone, Debug)]
-pub enum Line {
+pub struct Line {
+    pub number: usize,
+    pub content: LineContent,
+}
+
+/// The content of a [`Line`].
+#[derive(Clone, Debug)]
+pub enum LineContent {
     Include(Include),
     Record(ParsedRr),
 }
@@ -170,7 +177,6 @@ pub enum Line {
 /// A parsed `$INCLUDE` directive.
 #[derive(Clone, Debug)]
 pub struct Include {
-    pub line: usize,
     pub path: Vec<u8>,
     pub origin: Option<Rc<Name>>,
 }
@@ -178,7 +184,6 @@ pub struct Include {
 /// Parsed resource record data.
 #[derive(Clone, Debug)]
 pub struct ParsedRr {
-    pub line: usize,
     pub owner: Rc<Name>,
     pub ttl: Ttl,
     pub class: Class,
@@ -213,10 +218,8 @@ impl<S: Read> Parser<S> {
     fn parse_line(&mut self) -> Result<Option<Line>> {
         if self.reader.peek_octet()? == Some(b'$') {
             self.parse_directive()
-                .map(|maybe_include| maybe_include.map(Line::Include))
         } else {
             self.parse_record_or_empty()
-                .map(|maybe_line| maybe_line.map(Line::Record))
         }
     }
 
@@ -267,24 +270,35 @@ pub struct RecordsOnly<S> {
     parser: Parser<S>,
 }
 
+/// A line with a record as returned by [`RecordsOnly::next`].
+pub struct RecordsOnlyLine {
+    pub number: usize,
+    pub record: ParsedRr,
+}
+
 impl<S: Read> Iterator for RecordsOnly<S> {
-    type Item = Result<ParsedRr>;
+    type Item = Result<RecordsOnlyLine>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.parser.next() {
-            Some(Ok(Line::Record(rr))) => Some(Ok(rr)),
-            Some(Ok(Line::Include(include))) => {
-                // We set the error flag on the underlying parser so
-                // that iteration ends.
-                self.parser.error = true;
-                Some(Err(Error::new(
-                    Position {
-                        line: include.line,
-                        column: 1,
-                    },
-                    ErrorKind::IncludeNotSupported,
-                )))
-            }
+            Some(Ok(line)) => match line.content {
+                LineContent::Include(_) => {
+                    // We set the error flag on the underlying parser so
+                    // that iteration ends.
+                    self.parser.error = true;
+                    Some(Err(Error::new(
+                        Position {
+                            line: line.number,
+                            column: 1,
+                        },
+                        ErrorKind::IncludeNotSupported,
+                    )))
+                }
+                LineContent::Record(record) => Some(Ok(RecordsOnlyLine {
+                    number: line.number,
+                    record,
+                })),
+            },
             Some(Err(e)) => Some(Err(e)),
             None => None,
         }

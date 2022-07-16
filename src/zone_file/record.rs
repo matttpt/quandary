@@ -18,7 +18,7 @@ use std::borrow::Borrow;
 use std::io::Read;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use super::{Error, ErrorKind, FieldOrEol, ParsedRr, Parser, Position, Result};
+use super::{Error, ErrorKind, FieldOrEol, Line, LineContent, ParsedRr, Parser, Position, Result};
 use crate::class::Class;
 use crate::name::Name;
 use crate::rr::rdata::{Rdata, RdataTooLongError, TxtBuilder};
@@ -31,7 +31,7 @@ impl<S: Read> Parser<S> {
     ////////////////////////////////////////////////////////////////////
 
     /// Parses a resource record or an empty line.
-    pub(super) fn parse_record_or_empty(&mut self) -> Result<Option<ParsedRr>> {
+    pub(super) fn parse_record_or_empty(&mut self) -> Result<Option<Line>> {
         let start_of_line = self.reader.position();
         let leading_whitespace = self.reader.skip_whitespace()?;
         if self.reader.skip_to_next_field_or_through_eol()? == FieldOrEol::Eol {
@@ -76,13 +76,15 @@ impl<S: Read> Parser<S> {
         self.context.previous_ttl = Some(ttl);
         self.context.previous_class = Some(class);
 
-        Ok(Some(ParsedRr {
-            line: start_of_line.line,
-            owner,
-            ttl,
-            class,
-            rr_type,
-            rdata,
+        Ok(Some(Line {
+            number: start_of_line.line,
+            content: LineContent::Record(ParsedRr {
+                owner,
+                ttl,
+                class,
+                rr_type,
+                rdata,
+            }),
         }))
     }
 

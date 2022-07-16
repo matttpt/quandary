@@ -16,14 +16,14 @@
 
 use std::io::Read;
 
-use super::{Error, ErrorKind, FieldOrEol, Include, Parser, Position, Result};
+use super::{Error, ErrorKind, FieldOrEol, Include, Line, LineContent, Parser, Position, Result};
 
 impl<S: Read> Parser<S> {
     /// Parses a zone file directive. This expects that the caller
     /// has already detected, but not consumed, the leading `$`. When
     /// successful, this method reads through the end of the line.
-    pub(super) fn parse_directive(&mut self) -> Result<Option<Include>> {
-        let include = if self.reader.expect_field_case_insensitive(b"$ORIGIN")? {
+    pub(super) fn parse_directive(&mut self) -> Result<Option<Line>> {
+        let line = if self.reader.expect_field_case_insensitive(b"$ORIGIN")? {
             self.parse_origin_directive()?;
             None
         } else if self.reader.expect_field_case_insensitive(b"$TTL")? {
@@ -37,7 +37,7 @@ impl<S: Read> Parser<S> {
                 ErrorKind::UnknownDirective,
             ));
         };
-        Ok(include)
+        Ok(line)
     }
 
     // Note that for these subroutines, the skip to the next field is
@@ -65,7 +65,7 @@ impl<S: Read> Parser<S> {
     }
 
     /// Parses an `$INCLUDE` directive.
-    fn parse_include_directive(&mut self) -> Result<Include> {
+    fn parse_include_directive(&mut self) -> Result<Line> {
         let line = self.reader.position().line;
         self.reader
             .skip_to_next_field(ErrorKind::ExpectedIncludePath)?;
@@ -77,7 +77,10 @@ impl<S: Read> Parser<S> {
             self.reader.expect_eol()?;
             Some(origin)
         };
-        Ok(Include { line, path, origin })
+        Ok(Line {
+            number: line,
+            content: LineContent::Include(Include { path, origin }),
+        })
     }
 
     /// Parses the path in an `$INCLUDE` directive.
@@ -194,22 +197,32 @@ mod tests {
     #[test]
     fn parsing_include_directive_works() {
         let mut parser = make_parser(b"$INCLUDE /path/to/file.zone");
-        let include = parser.parse_directive().unwrap().unwrap();
-        assert_eq!(include.line, 1);
-        assert_eq!(include.path, b"/path/to/file.zone");
-        assert!(include.origin.is_none());
+        let line = parser.parse_directive().unwrap().unwrap();
+        assert_eq!(line.number, 1);
+        match line.content {
+            LineContent::Include(include) => {
+                assert_eq!(include.path, b"/path/to/file.zone");
+                assert!(include.origin.is_none());
+            }
+            _ => panic!(),
+        }
     }
 
     #[test]
     fn parsing_include_directive_with_origin_works() {
         let mut parser = make_parser(b"$INCLUDE /path/to/file.zone origin.test.");
-        let include = parser.parse_directive().unwrap().unwrap();
-        assert_eq!(include.line, 1);
-        assert_eq!(include.path, b"/path/to/file.zone");
-        assert_eq!(
-            include.origin.unwrap().as_ref(),
-            "origin.test.".parse::<Box<Name>>().unwrap().as_ref(),
-        );
+        let line = parser.parse_directive().unwrap().unwrap();
+        assert_eq!(line.number, 1);
+        match line.content {
+            LineContent::Include(include) => {
+                assert_eq!(include.path, b"/path/to/file.zone");
+                assert_eq!(
+                    include.origin.unwrap().as_ref(),
+                    "origin.test.".parse::<Box<Name>>().unwrap().as_ref(),
+                );
+            }
+            _ => panic!(),
+        }
     }
 
     #[test]
