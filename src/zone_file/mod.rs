@@ -22,9 +22,28 @@
 //! call [`Parser::records_only`], which converts the [`Parser`] into a
 //! [`RecordsOnly`] iterator.
 //!
+//! ## Handling `$INCLUDE` directives
+//!
+//! 1. Use the [`path`](`Include::path`) member of the returned
+//!    [`Include`] structure to determine which zone file to include.
+//! 2. Open a stream to the included file.
+//! 3. Pass the stream from 2 and the [`origin`](`Include::origin`)
+//!    member of the [`Include`] structure to
+//!    [`Parser::new_for_include`] to create a new [`Parser`] for the
+//!    included file.
+//! 4. Use the new [`Parser`] to parse the included file.
+//! 5. When parsing of the included file is complete, update the
+//!    original [`Parser`]'s parse context by passing the included
+//!    file's [`Parser`] to [`Parser::update_context_from_include`].
+//! 6. Continue parsing the original zone file.
+//!
+//! ## Errors
+//!
 //! Errors (which may be I/O errors or syntax errors) are reported
 //! through the [`Error`] type. Iteration ends and parsing cannot be
 //! continued after an error is returned.
+//!
+//! ## Example
 //!
 //! ```
 //! use std::io::Cursor;
@@ -144,7 +163,7 @@ pub struct Parser<S> {
 /// classes default to the previous record's class. Omitted owner names
 /// default to the previous owner. This structure encapsulates all this
 /// information.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct Context {
     origin: Option<Rc<Name>>,
     previous_owner: Option<Rc<Name>>,
@@ -199,11 +218,51 @@ impl<S: Read> Parser<S> {
     /// Creates a new [`Parser`] to read a zone file from the provided
     /// stream.
     pub fn new(stream: S) -> Self {
+        Self::with_context(stream, Context::default())
+    }
+
+    /// Creates a new [`Parser`] to read a zone file included (with
+    /// `$INCLUDE`) at this [`Parser`]'s current location.
+    ///
+    /// This is intended to be used when [`Parser::next`] returns an
+    /// `$INCLUDE` line. The new [`Parser`] inherits its parse context
+    /// from this one. The origin can be overriden with the `origin`
+    /// parameter; this should be set to the
+    /// [`origin`](`Include::origin`) member of the [`Include`]
+    /// structure.
+    ///
+    /// See the [module-level documentation](`self`) for more
+    /// information on processing `$INCLUDE`s.
+    pub fn new_for_include<T: Read>(&self, stream: T, origin: Option<Rc<Name>>) -> Parser<T> {
+        let context = if origin.is_some() {
+            Context {
+                origin,
+                previous_owner: self.context.previous_owner.clone(),
+                ..self.context
+            }
+        } else {
+            self.context.clone()
+        };
+        Parser::with_context(stream, context)
+    }
+
+    /// Creates a new [`Parser`] to read a zone file from the provided
+    /// stream, with the specified initial parse context.
+    fn with_context(stream: S, context: Context) -> Self {
         Self {
             error: false,
             reader: Reader::new(stream),
-            context: Context::default(),
+            context,
         }
+    }
+
+    /// Updates this [`Parser`]'s context after an included file has
+    /// been parsed.
+    pub fn update_context_from_include<T>(&mut self, include_parser: Parser<T>) {
+        self.context = Context {
+            origin: self.context.origin.clone(),
+            ..include_parser.context
+        };
     }
 
     /// Converts this [`Parser`] into an iterator that produces only
@@ -313,11 +372,78 @@ impl<S: Read> Iterator for RecordsOnly<S> {
 mod tests {
     use std::io::Cursor;
 
-    use super::Parser;
+    use super::*;
 
     /// A helper used throughout the [`zone_file`](`super`) module's
     /// tests.
     pub(super) fn make_parser(data: &[u8]) -> Parser<Cursor<&[u8]>> {
         Parser::new(Cursor::new(data))
+    }
+
+    fn make_parser_with_context(data: &[u8], ctx: Context) -> Parser<Cursor<&[u8]>> {
+        Parser::with_context(Cursor::new(data), ctx)
+    }
+
+    fn rced_name(name: &str) -> Rc<Name> {
+        name.parse::<Box<Name>>().unwrap().into()
+    }
+
+    #[test]
+    fn new_for_include_works() {
+        let origin = rced_name("quandary.test.");
+        let previous_owner = rced_name("sub.quandary.test.");
+        let specified_origin = rced_name("sub2.quandary.test.");
+        let mut context = Context {
+            origin: Some(origin),
+            previous_owner: Some(previous_owner),
+            previous_ttl: Some(Ttl::from(3600)),
+            previous_class: Some(Class::IN),
+            default_ttl: Some(Ttl::from(7200)),
+        };
+        let parser = Parser::with_context(Cursor::new(b""), context.clone());
+        assert_eq!(
+            context,
+            parser.new_for_include(Cursor::new(b""), None).context,
+        );
+        context.origin = Some(specified_origin.clone());
+        assert_eq!(
+            context,
+            parser
+                .new_for_include(Cursor::new(b""), Some(specified_origin))
+                .context,
+        );
+    }
+
+    #[test]
+    fn update_context_from_include_works() {
+        let original_origin = rced_name("quandary.test.");
+        let original_context = Context {
+            origin: Some(original_origin.clone()),
+            previous_owner: Some(original_origin.clone()),
+            previous_ttl: Some(Ttl::from(3600)),
+            previous_class: Some(Class::IN),
+            default_ttl: Some(Ttl::from(7200)),
+        };
+        let include_origin = rced_name("sub.quandary.test.");
+        let include_context = Context {
+            origin: Some(include_origin.clone()),
+            previous_owner: Some(include_origin.clone()),
+            previous_ttl: Some(Ttl::from(86400)),
+            previous_class: Some(Class::HS),
+            default_ttl: Some(Ttl::from(10800)),
+        };
+        let mut parser = make_parser_with_context(b"", original_context);
+        parser.update_context_from_include(make_parser_with_context(b"", include_context.clone()));
+
+        // The origin should not be touched (RFC 1035 § 5.1), but
+        // everything else should be updated from the include's Context.
+        assert_eq!(parser.context.origin, Some(original_origin));
+        assert_eq!(parser.context.previous_owner, Some(include_origin));
+        assert_eq!(parser.context.previous_ttl, include_context.previous_ttl);
+        assert_eq!(
+            parser.context.previous_class,
+            include_context.previous_class,
+        );
+        assert_eq!(parser.context.default_ttl, include_context.default_ttl);
     }
 }
