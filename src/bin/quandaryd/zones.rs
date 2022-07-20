@@ -96,7 +96,7 @@ fn load_and_validate_zone(zone_config: &ZoneConfig) -> Result<Zone> {
         .with_context(|| {
             format!(
                 "failed to add the record at {} line {} to the zone",
-                zone_config.path.display(),
+                line.path.display(),
                 line.number,
             )
         })?;
