@@ -59,13 +59,20 @@ impl From<io::Error> for Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Self::Io(io_error) => write!(f, "I/O error: {}", io_error),
+            Self::Io(_) => f.write_str("I/O error while reading stream"),
             Self::Syntax(details) => details.fmt(f),
         }
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(io_error) => Some(io_error),
+            Self::Syntax(_) => None,
+        }
+    }
+}
 
 /// A result type for zone file parsing.
 pub type Result<T> = std::result::Result<T, Error>;

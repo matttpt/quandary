@@ -549,13 +549,20 @@ impl From<io::Error> for Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Self::Io(err) => err.fmt(f),
+            Self::Io(_) => f.write_str("I/O error while starting thread"),
             Self::ShuttingDown => f.write_str("thread group or pool is shutting down"),
         }
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(io_error) => Some(io_error),
+            Self::ShuttingDown => None,
+        }
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////
 // TESTS                                                              //

@@ -51,8 +51,8 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match &self.kind {
-            ErrorKind::GeneralIo(io_err) => {
-                write!(f, "I/O error reading {}: {}", self.path.display(), io_err)
+            ErrorKind::GeneralIo(_) => {
+                write!(f, "I/O error while reading {}", self.path.display())
             }
             ErrorKind::InvalidPath(ip) => write!(
                 f,
@@ -63,11 +63,10 @@ impl fmt::Display for Error {
             ErrorKind::FailedToOpenInclude(ftoi) => {
                 write!(
                     f,
-                    "failed to open file {} (included at {} line {}): {}",
+                    "failed to open {} (included at {} line {})",
                     ftoi.path.display(),
                     self.path.display(),
                     ftoi.line,
-                    ftoi.io_err,
                 )
             }
             ErrorKind::IncludesTooDeep(itd) => {
@@ -105,7 +104,15 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.kind {
+            ErrorKind::GeneralIo(io_error) => Some(io_error),
+            ErrorKind::FailedToOpenInclude(ftoi) => Some(&ftoi.io_err),
+            _ => None,
+        }
+    }
+}
 
 /// A result type for file system–based zone file parsing.
 pub type Result<T> = std::result::Result<T, Error>;
