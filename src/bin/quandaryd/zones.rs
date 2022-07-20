@@ -15,16 +15,19 @@
 //! Implements zone loading.
 
 use std::fmt::Write;
-use std::fs::File;
 
 use anyhow::{anyhow, Context, Result};
 use log::Level::Warn;
 use log::{debug, error, log_enabled, warn};
 
 use quandary::zone::{Catalog, CatalogEntry, ValidationIssue, Zone};
-use quandary::zone_file::Parser;
+use quandary::zone_file::fs::Parser;
 
 use crate::config::ZoneConfig;
+
+/// The maximum number of nested `$INCLUDE` directives that we will
+/// process before raising an error.
+const MAX_INCLUDE_DEPTH: usize = 16;
 
 /// Loads the zones configured in `zones`.
 pub fn load(zones: Vec<ZoneConfig>) -> Catalog {
@@ -78,10 +81,9 @@ fn load_and_validate_zone(zone_config: &ZoneConfig) -> Result<Zone> {
         zone_config.class.0,
         zone_config.glue_policy.into(),
     );
-    let zone_file = File::open(&zone_config.path)
+    let parser = Parser::open(&zone_config.path, MAX_INCLUDE_DEPTH)
         .with_context(|| format!("failed to open {}", zone_config.path.display()))?;
-
-    for line in Parser::new(zone_file).records_only() {
+    for line in parser {
         let line =
             line.with_context(|| format!("failed to parse {}", zone_config.path.display()))?;
         zone.add(

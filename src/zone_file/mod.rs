@@ -22,7 +22,18 @@
 //! call [`Parser::records_only`], which converts the [`Parser`] into a
 //! [`RecordsOnly`] iterator.
 //!
-//! ## Handling `$INCLUDE` directives
+//! ## Parsing from the file system
+//!
+//! The [`fs`] submodule contains a parser that reads from the file
+//! system and automatically handles `$INCLUDE` directives, including
+//! nested `$INCLUDE`s up to a configured maximum depth. See its
+//! [documentation](`fs`) for details.
+//!
+//! ## Handling `$INCLUDE` directives manually
+//!
+//! If you are not using the [`fs`] module but want to support
+//! `$INCLUDE` directives, take these steps when [`Parser::next`]
+//! reports an `$INCLUDE` line:
 //!
 //! 1. Use the [`path`](`Include::path`) member of the returned
 //!    [`Include`] structure to determine which zone file to include.
@@ -127,6 +138,7 @@ mod character_string;
 mod directive;
 pub mod error;
 mod escape;
+pub mod fs;
 mod name;
 mod reader;
 mod record;
