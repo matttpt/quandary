@@ -15,6 +15,7 @@
 //! Implementation of the [`Catalog`] structure.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use super::{Node, Zone};
 use crate::class::Class;
@@ -41,7 +42,7 @@ type CatalogNode = Node<Option<CatalogEntry>>;
 /// a placeholder indicating that the zone has not yet been loaded or
 /// that the zone failed to load.
 pub enum CatalogEntry {
-    Loaded(Zone),
+    Loaded(Arc<Zone>),
     NotYetLoaded(Box<Name>, Class),
     FailedToLoad(Box<Name>, Class),
 }
@@ -134,7 +135,7 @@ mod tests {
 
         let mut catalog = Catalog::new();
         let test_zone = Zone::new(test.clone(), Class::IN, GluePolicy::Narrow);
-        catalog.replace(CatalogEntry::Loaded(test_zone));
+        catalog.replace(CatalogEntry::Loaded(Arc::new(test_zone)));
         catalog.replace(CatalogEntry::NotYetLoaded(
             x_quandary_test.clone(),
             Class::IN,

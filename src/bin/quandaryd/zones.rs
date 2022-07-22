@@ -15,6 +15,7 @@
 //! Implements zone loading.
 
 use std::fmt::Write;
+use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use log::Level::Warn;
@@ -43,7 +44,7 @@ pub fn load(zones: Vec<ZoneConfig>) -> Catalog {
         );
         match load_and_validate_zone(&zone_config) {
             Ok(zone) => {
-                catalog.replace(CatalogEntry::Loaded(zone));
+                catalog.replace(CatalogEntry::Loaded(Arc::new(zone)));
             }
             Err(e) => {
                 let mut message = format!(
