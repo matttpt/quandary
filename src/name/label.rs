@@ -15,6 +15,7 @@
 //! Implementation of the [`Label`] and [`LabelBuf`] types.
 
 use std::borrow::Borrow;
+use std::cmp::Ordering;
 use std::convert::TryFrom;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -191,6 +192,35 @@ impl PartialEq for Label {
 
 impl Eq for Label {}
 
+impl PartialOrd for Label {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// The [`Ord`] implementation for `Label` employs DNSSEC's canonical
+/// ordering of labels. In accordance with [RFC 4034 § 6.1], `Label`s
+/// are ordered "as unsigned left-justified octet strings," with the
+/// additional stipulation that uppercase ASCII letters are treated as
+/// if they were lowercase.
+///
+/// [RFC 4034 § 6.1]: https://datatracker.ietf.org/doc/html/rfc4034#section-6.1
+impl Ord for Label {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.octets
+            .iter()
+            .zip(other.octets.iter())
+            .find_map(
+                |(a, b)| match a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()) {
+                    Ordering::Less => Some(Ordering::Less),
+                    Ordering::Greater => Some(Ordering::Greater),
+                    Ordering::Equal => None,
+                },
+            )
+            .unwrap_or_else(|| self.octets.len().cmp(&other.octets.len()))
+    }
+}
+
 impl Hash for Label {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // We have to hash in a case-insensitive manner to match our
@@ -323,6 +353,18 @@ impl PartialEq for LabelBuf {
 
 impl Eq for LabelBuf {}
 
+impl PartialOrd for LabelBuf {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.deref().partial_cmp(other.deref())
+    }
+}
+
+impl Ord for LabelBuf {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.deref().cmp(other.deref())
+    }
+}
+
 impl Hash for LabelBuf {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.deref().hash(state)
@@ -426,6 +468,39 @@ mod tests {
         labelbuf.hash(&mut hasher);
         let labelbuf_hash = hasher.finish();
         assert_eq!(label_hash, labelbuf_hash);
+    }
+
+    fn ord_works<L>()
+    where
+        L: Ord + TryFrom<&'static [u8]>,
+        <L as TryFrom<&'static [u8]>>::Error: fmt::Debug,
+    {
+        let labels = [
+            (0, b"exam".as_slice()),
+            (1, b"example".as_slice()),
+            (1, b"eXaMpLe".as_slice()),
+            (2, b"examples".as_slice()),
+            (3, b"label".as_slice()),
+        ]
+        .into_iter()
+        .map(|(i, l)| (i, L::try_from(l).unwrap()))
+        .collect::<Vec<_>>();
+
+        for (i, li) in labels.iter() {
+            for (j, lj) in labels.iter() {
+                assert_eq!(i.cmp(j), li.cmp(lj));
+            }
+        }
+    }
+
+    #[test]
+    fn label_ord_works() {
+        ord_works::<&Label>();
+    }
+
+    #[test]
+    fn labelbuf_ord_works() {
+        ord_works::<LabelBuf>();
     }
 
     #[test]

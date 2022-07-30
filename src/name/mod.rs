@@ -15,6 +15,7 @@
 //! Implementation of data structures related to domain names.
 
 use std::alloc::{self, Layout};
+use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::iter::FusedIterator;
@@ -432,6 +433,27 @@ impl PartialEq for Name {
 
 impl Eq for Name {}
 
+impl PartialOrd for Name {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// The [`Ord`] implementation for `Name` employs DNSSEC's canonical
+/// ordering of domain names. Per [RFC 4034 § 6.1], `Name`s are ordered
+/// as strings of labels read from right to left.
+///
+/// [RFC 4034 § 6.1]: https://datatracker.ietf.org/doc/html/rfc4034#section-6.1
+impl Ord for Name {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.labels()
+            .rev()
+            .zip(other.labels().rev())
+            .find_map(|(a, b)| Some(a.cmp(b)).filter(|ordering| ordering.is_ne()))
+            .unwrap_or_else(|| self.len().cmp(&other.len()))
+    }
+}
+
 impl Hash for Name {
     fn hash<H: Hasher>(&self, state: &mut H) {
         for label in self.labels() {
@@ -757,6 +779,32 @@ mod tests {
     #[should_panic(expected = "index out of bounds: the len is 4 but the index is 5")]
     fn wire_repr_to_rejects_large_index() {
         "a.bb.ccc.".parse::<Box<Name>>().unwrap().wire_repr_to(5);
+    }
+
+    #[test]
+    fn ord_works() {
+        // This ordered list is from RFC 4034 § 6.1, which defines the
+        // canonical ordering of domain names.
+        let names: Vec<Box<Name>> = [
+            "example.",
+            "a.example.",
+            "yljkjljk.a.example.",
+            "Z.a.example.",
+            "zABC.a.EXAMPLE.",
+            "z.example.",
+            "\\001.z.example.",
+            "*.z.example.",
+            "\\200.z.example.",
+        ]
+        .into_iter()
+        .map(|n| n.parse().unwrap())
+        .collect();
+
+        for (i, ni) in names.iter().enumerate() {
+            for (j, nj) in names.iter().enumerate() {
+                assert_eq!(i.cmp(&j), ni.cmp(nj));
+            }
+        }
     }
 
     #[test]
