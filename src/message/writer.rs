@@ -21,7 +21,7 @@ use super::constants::*;
 use super::{ExtendedRcode, Opcode, Question, Rcode};
 use crate::class::Class;
 use crate::name::Name;
-use crate::rr::{Rdata, Rrset, Ttl, Type};
+use crate::rr::{Rdata, RdataSet, Ttl, Type};
 
 ////////////////////////////////////////////////////////////////////////
 // WRITER                                                             //
@@ -321,10 +321,17 @@ impl<'a> Writer<'a> {
     /// Adds an RRset to the answer section of the message. This must be
     /// used after any questions are added and before RRs are added to
     /// any other section.
-    pub fn add_answer_rrset(&mut self, owner: &Name, rrset: &Rrset) -> Result<()> {
+    pub fn add_answer_rrset(
+        &mut self,
+        owner: &Name,
+        rr_type: Type,
+        class: Class,
+        ttl: Ttl,
+        rdatas: &RdataSet,
+    ) -> Result<()> {
         self.with_rollback(|this| {
             this.change_section_to_answer()?;
-            let n_added = this.add_rrset(owner, rrset)?;
+            let n_added = this.add_rrset(owner, rr_type, class, ttl, rdatas)?;
             if n_added > u16::MAX as usize {
                 Err(Error::CountOverflow)
             } else if let Some(new_ancount) = this.ancount.checked_add(n_added as u16) {
@@ -374,10 +381,17 @@ impl<'a> Writer<'a> {
     /// Adds an RRset to the authority section of the message. This
     /// must be used after any questions and answer RRs are added and
     /// before any additional RRs are added.
-    pub fn add_authority_rrset(&mut self, owner: &Name, rrset: &Rrset) -> Result<()> {
+    pub fn add_authority_rrset(
+        &mut self,
+        owner: &Name,
+        rr_type: Type,
+        class: Class,
+        ttl: Ttl,
+        rdatas: &RdataSet,
+    ) -> Result<()> {
         self.with_rollback(|this| {
             this.change_section_to_authority()?;
-            let n_added = this.add_rrset(owner, rrset)?;
+            let n_added = this.add_rrset(owner, rr_type, class, ttl, rdatas)?;
             if n_added > u16::MAX as usize {
                 Err(Error::CountOverflow)
             } else if let Some(new_nscount) = this.nscount.checked_add(n_added as u16) {
@@ -428,10 +442,17 @@ impl<'a> Writer<'a> {
     /// Adds an RRset to the additional section of the message. This
     /// must be used after any questions and any RRs in other sections
     /// are added.
-    pub fn add_additional_rrset(&mut self, owner: &Name, rrset: &Rrset) -> Result<()> {
+    pub fn add_additional_rrset(
+        &mut self,
+        owner: &Name,
+        rr_type: Type,
+        class: Class,
+        ttl: Ttl,
+        rdatas: &RdataSet,
+    ) -> Result<()> {
         self.with_rollback(|this| {
             this.section = Section::Additional;
-            let n_added = this.add_rrset(owner, rrset)?;
+            let n_added = this.add_rrset(owner, rr_type, class, ttl, rdatas)?;
             if n_added > u16::MAX as usize {
                 Err(Error::CountOverflow)
             } else if let Some(new_arcount) = this.arcount.checked_add(n_added as u16) {
@@ -467,10 +488,17 @@ impl<'a> Writer<'a> {
     /// use: the write is not done atomically and may change the cursor
     /// even when an error is returned. This is intended to be used with
     /// [`Writer::with_rollback`].
-    fn add_rrset(&mut self, owner: &Name, rrset: &Rrset) -> Result<usize> {
+    fn add_rrset(
+        &mut self,
+        owner: &Name,
+        rr_type: Type,
+        class: Class,
+        ttl: Ttl,
+        rdatas: &RdataSet,
+    ) -> Result<usize> {
         let mut n_added = 0;
-        for rdata in rrset.rdatas() {
-            self.add_rr(owner, rrset.rr_type, rrset.class, rrset.ttl, rdata)?;
+        for rdata in rdatas.iter() {
+            self.add_rr(owner, rr_type, class, ttl, rdata)?;
             n_added += 1;
         }
         Ok(n_added)
@@ -653,6 +681,10 @@ mod tests {
 
     use super::super::Question;
     use super::*;
+    use crate::rr::RdataSetOwned;
+
+    static TYPE: Type = Type::A;
+    static CLASS: Class = Class::IN;
 
     lazy_static! {
         static ref NAME: Box<Name> = "quandary.test.".parse().unwrap();
@@ -661,11 +693,12 @@ mod tests {
             qtype: Type::A.into(),
             qclass: Class::IN.into(),
         };
+        static ref TTL: Ttl = Ttl::from(3600);
         static ref RDATA: &'static Rdata = b"\x7f\x00\x00\x01".try_into().unwrap();
-        static ref RRSET: Rrset = {
-            let mut rrset = Rrset::new(Type::A, Class::IN, Ttl::from(3600));
-            rrset.push_rdata(*RDATA);
-            rrset
+        static ref RDATAS: RdataSetOwned = {
+            let mut rdatas = RdataSetOwned::new();
+            rdatas.insert(TYPE, *RDATA);
+            rdatas
         };
     }
 
@@ -681,7 +714,9 @@ mod tests {
         writer.set_aa(true);
         writer.set_rcode(Rcode::NOERROR);
         writer.add_question(&QUESTION).unwrap();
-        writer.add_answer_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_answer_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
         let len = writer.finish();
         assert_eq!(
             &buf[0..len],
@@ -739,26 +774,19 @@ mod tests {
     fn rr_count_overflow_test_impl<'a>(
         buf: &'a mut [u8],
         add_rr: fn(&mut Writer<'a>, &Name, Type, Class, Ttl, &Rdata) -> Result<()>,
-        add_rrset: fn(&mut Writer<'a>, &Name, &Rrset) -> Result<()>,
+        add_rrset: fn(&mut Writer<'a>, &Name, Type, Class, Ttl, &RdataSet) -> Result<()>,
     ) {
         let mut writer = Writer::try_from(buf).unwrap();
         for _ in 0..u16::MAX {
-            add_rrset(&mut writer, &NAME, &RRSET).unwrap();
+            add_rrset(&mut writer, &NAME, TYPE, CLASS, *TTL, &RDATAS).unwrap();
         }
         assert_eq!(
-            add_rr(
-                &mut writer,
-                &NAME,
-                Type::A,
-                Class::IN,
-                Ttl::from(3600),
-                *RDATA
-            ),
-            Err(Error::CountOverflow)
+            add_rr(&mut writer, &NAME, TYPE, CLASS, *TTL, *RDATA),
+            Err(Error::CountOverflow),
         );
         assert_eq!(
-            add_rrset(&mut writer, &NAME, &RRSET),
-            Err(Error::CountOverflow)
+            add_rrset(&mut writer, &NAME, TYPE, CLASS, *TTL, &RDATAS),
+            Err(Error::CountOverflow),
         );
     }
 
@@ -774,15 +802,21 @@ mod tests {
         writer.add_question(&QUESTION).unwrap();
 
         // Check Answer -> Question.
-        writer.add_answer_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_answer_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
         assert_eq!(writer.add_question(&QUESTION), Err(Error::OutOfOrder));
 
         // Check Authority -> Question.
-        writer.add_additional_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_additional_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
         assert_eq!(writer.add_question(&QUESTION), Err(Error::OutOfOrder));
 
         // Check Additional -> Question.
-        writer.add_additional_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_additional_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
         assert_eq!(writer.add_question(&QUESTION), Err(Error::OutOfOrder));
     }
 
@@ -792,28 +826,38 @@ mod tests {
         let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
 
         // Check empty (Question) -> Answer.
-        writer.add_answer_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_answer_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
 
         // Check Answer -> Answer.
-        writer.add_answer_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_answer_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
 
         // Check Question -> Answer.
         writer.clear_rrs();
         writer.add_question(&QUESTION).unwrap();
-        writer.add_answer_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_answer_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
 
         // Check Authority -> Answer.
-        writer.add_authority_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_authority_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
         assert_eq!(
-            writer.add_answer_rrset(&NAME, &RRSET),
-            Err(Error::OutOfOrder)
+            writer.add_answer_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS),
+            Err(Error::OutOfOrder),
         );
 
         // Check Additional -> Answer.
-        writer.add_additional_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_additional_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
         assert_eq!(
-            writer.add_answer_rrset(&NAME, &RRSET),
-            Err(Error::OutOfOrder)
+            writer.add_answer_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS),
+            Err(Error::OutOfOrder),
         );
     }
 
@@ -823,27 +867,39 @@ mod tests {
         let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
 
         // Check empty (Question) -> Authority.
-        writer.add_authority_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_authority_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
 
         // Check Authority -> Authority.
-        writer.add_authority_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_authority_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
 
         // Check Question -> Authority.
         writer.clear_rrs();
         writer.add_question(&QUESTION).unwrap();
-        writer.add_authority_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_authority_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
 
         // Check Answer -> Authority.
         writer.clear_rrs();
-        writer.add_answer_rrset(&NAME, &RRSET).unwrap();
-        writer.add_authority_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_answer_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
+        writer
+            .add_authority_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
 
         // Check Additional -> Authority.
         writer.clear_rrs();
-        writer.add_additional_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_additional_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
         assert_eq!(
-            writer.add_authority_rrset(&NAME, &RRSET),
-            Err(Error::OutOfOrder)
+            writer.add_authority_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS),
+            Err(Error::OutOfOrder),
         );
     }
 
@@ -853,25 +909,39 @@ mod tests {
         let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
 
         // Check empty (Question) -> Additional.
-        writer.add_additional_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_additional_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
 
         // Check Additional -> Additional.
-        writer.add_additional_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_additional_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
 
         // Check Question -> Additional.
         writer.clear_rrs();
         writer.add_question(&QUESTION).unwrap();
-        writer.add_additional_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_additional_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
 
         // Check Answer -> Additional.
         writer.clear_rrs();
-        writer.add_answer_rrset(&NAME, &RRSET).unwrap();
-        writer.add_additional_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_answer_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
+        writer
+            .add_additional_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
 
         // Check Authority -> Additional.
         writer.clear_rrs();
-        writer.add_authority_rrset(&NAME, &RRSET).unwrap();
-        writer.add_additional_rrset(&NAME, &RRSET).unwrap();
+        writer
+            .add_authority_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
+        writer
+            .add_additional_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
     }
 
     #[test]

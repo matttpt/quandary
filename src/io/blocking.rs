@@ -36,6 +36,7 @@ use std::time::{Duration, Instant};
 use log::error;
 
 use super::socket::{TcpListener, TcpListenerApi, UdpSocket, UdpSocketApi};
+use crate::db::Catalog;
 use crate::server::{ReceivedInfo, Response, Server, Transport};
 use crate::thread::{ThreadGroup, ThreadPool};
 
@@ -110,11 +111,14 @@ impl BlockingIoProvider {
     /// On platforms with graceful shutdown support, the server can be
     /// shut down later simply by shutting down the [`ThreadGroup`]
     /// provided here.
-    pub fn start(
+    pub fn start<C>(
         self,
-        server: &Arc<Server>,
+        server: &Arc<Server<C>>,
         group: &Arc<ThreadGroup>,
-    ) -> Result<(), crate::thread::Error> {
+    ) -> Result<(), crate::thread::Error>
+    where
+        C: Catalog + Send + Sync + 'static,
+    {
         let tcp_listener = Arc::new(self.tcp_listener);
 
         // Start the TCP threads.
@@ -168,11 +172,14 @@ const CHECK_FOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 const READ_MESSAGE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The TCP listener/accept loop.
-fn run_tcp_listener(
+fn run_tcp_listener<C>(
     pool: &Arc<ThreadPool>,
-    server: &Arc<Server>,
+    server: &Arc<Server<C>>,
     listener: &Arc<TcpListener>,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    C: Catalog + Send + Sync + 'static,
+{
     loop {
         if pool.is_shutting_down() {
             return Ok(());
@@ -217,12 +224,15 @@ fn run_tcp_listener(
 }
 
 /// Handles a TCP connection.
-fn handle_tcp_connection(
+fn handle_tcp_connection<C>(
     pool: &Arc<ThreadPool>,
-    server: &Arc<Server>,
+    server: &Arc<Server<C>>,
     mut socket: TcpStream,
     client_ip: IpAddr,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    C: Catalog + Send,
+{
     if TcpListener::POLL_ACCEPT_WORKS {
         // On some systems, the socket might inherit nonblocking status
         // from the listener.
@@ -317,11 +327,14 @@ fn handle_tcp_connection(
 }
 
 /// The UDP receive/handle/send loop.
-fn run_udp_worker(
+fn run_udp_worker<C>(
     group: &Arc<ThreadGroup>,
-    server: &Arc<Server>,
+    server: &Arc<Server<C>>,
     mut socket: UdpSocket,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    C: Catalog,
+{
     let udp_payload_size = server.edns_udp_payload_size() as usize;
     let mut received_buf = vec![0; udp_payload_size];
     let mut response_buf = vec![0; udp_payload_size];

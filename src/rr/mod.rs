@@ -15,10 +15,10 @@
 //! Data structures and routines for handling DNS resource record data.
 
 pub mod rdata;
+pub mod rdata_set;
 mod rr_type;
-pub mod rrset;
 mod ttl;
 pub use rdata::Rdata;
+pub use rdata_set::{RdataSet, RdataSetOwned};
 pub use rr_type::Type;
-pub use rrset::{Rrset, RrsetList};
 pub use ttl::Ttl;

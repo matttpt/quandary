@@ -28,10 +28,11 @@ use paste::paste;
 use serde::{de, Deserialize};
 
 use quandary::class::Class;
+use quandary::db::zone::GluePolicy;
+use quandary::db::{HashMapTreeCatalog, HashMapTreeZone};
 use quandary::name::Name;
 use quandary::server::Server;
 use quandary::thread::{self, ThreadGroup};
-use quandary::zone::GluePolicy;
 
 use crate::args::RunArgs;
 
@@ -168,7 +169,7 @@ pub trait IoProvider {
     fn supports_graceful_shutdown(&self) -> bool;
     fn start(
         self: Box<Self>,
-        server: &Arc<Server>,
+        server: &Arc<Server<HashMapTreeCatalog<HashMapTreeZone, ()>>>,
         group: &Arc<ThreadGroup>,
     ) -> Result<(), thread::Error>;
 }
@@ -217,7 +218,7 @@ mod blocking_io {
 
         fn start(
             self: Box<Self>,
-            server: &Arc<Server>,
+            server: &Arc<Server<HashMapTreeCatalog<HashMapTreeZone, ()>>>,
             group: &Arc<ThreadGroup>,
         ) -> Result<(), thread::Error> {
             BlockingIoProvider::start(*self, server, group)
@@ -322,7 +323,7 @@ fn default_zone_class() -> ConfigClass {
     ConfigClass(Class::IN)
 }
 
-/// A deserializable wrapper over the [`quandary::zone::GluePolicy`]
+/// A deserializable wrapper over the [`quandary::db::zone::GluePolicy`]
 /// type.
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub enum ConfigGluePolicy {

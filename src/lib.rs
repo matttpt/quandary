@@ -13,6 +13,7 @@
 // permissions and limitations under the License.
 
 pub mod class;
+pub mod db;
 pub mod io;
 pub mod message;
 pub mod name;
@@ -20,5 +21,4 @@ pub mod rr;
 pub mod server;
 pub mod thread;
 mod util;
-pub mod zone;
 pub mod zone_file;

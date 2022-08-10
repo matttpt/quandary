@@ -17,15 +17,16 @@
 //! The [`Server`] structure is the heart of this module; see its
 //! documentation for details.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, RwLock};
 
+use crate::db::Catalog;
 use crate::message::reader::ReadRr;
 use crate::message::{writer, ExtendedRcode, Opcode, Question, Rcode, Reader, Writer};
 use crate::name::Name;
 use crate::rr::Type;
-use crate::zone::Catalog;
 
 mod query;
 mod rrl;
@@ -38,7 +39,7 @@ pub use rrl::{RrlParamError, RrlParams};
 ////////////////////////////////////////////////////////////////////////
 
 /// An authoritative DNS server, abstracted from any underlying network
-/// I/O provider.
+/// I/O provider or record database.
 ///
 /// The [`Server`] structure implements the message-processing logic of
 /// an authoritative DNS server. It receives, parses, and responds to
@@ -48,17 +49,17 @@ pub use rrl::{RrlParamError, RrlParams};
 /// are chosen, and then sending the responses that the [`Server`]
 /// produces.
 ///
-/// The [`Server`] in turn produces responses based on its [`Catalog`]
-/// of [`Zone`](crate::zone::Zone)s loaded into memory. A [`Server`] is
-/// created to serve a [`Catalog`] with [`Server::new`].
-pub struct Server {
-    catalog: RwLock<Arc<Catalog>>,
+/// The [`Server`] in turn produces responses based on its catalog of
+/// zones. The [`Server`] type is generic over the catalog data
+/// source chosen; see [`Catalog`] and [`Zone`](`crate::db::Zone`).
+pub struct Server<C> {
+    catalog: RwLock<Arc<C>>,
     edns_udp_payload_size: u16,
     rrl: Option<Rrl>,
 }
 
-impl Server {
-    /// Creates a new `Server` that will serve the provided [`Catalog`].
+impl<C> Server<C> {
+    /// Creates a new `Server` that will serve the provided catalog.
     ///
     /// The default EDNS UDP payload size used is 1,232 octets. This is
     /// the safe default recommended for DNS Flag Day 2020, since 1,232
@@ -68,7 +69,7 @@ impl Server {
     ///
     /// By default, RRL is disabled. However, public servers should
     /// consider enabling it.
-    pub fn new(catalog: Arc<Catalog>) -> Self {
+    pub fn new(catalog: Arc<C>) -> Self {
         Self {
             catalog: RwLock::new(catalog),
             edns_udp_payload_size: 1232,
@@ -76,16 +77,16 @@ impl Server {
         }
     }
 
-    /// Returns the current [`Catalog`] of the server.
-    pub fn catalog(&self) -> Arc<Catalog> {
+    /// Returns the current catalog of the server.
+    pub fn catalog(&self) -> Arc<C> {
         self.catalog.read().unwrap().clone()
     }
 
-    /// Sets the [`Catalog`] of the `Server`. Some in-flight message
-    /// handling may continue to use the old [`Catalog`] (depending on
-    /// how far it has gotten), but handling started after this call
+    /// Sets the catalog of the `Server`. Some in-flight message
+    /// handling may continue to use the old catalog (depending on how
+    /// far it has gotten), but handling started after this call
     /// completes will see the new one.
-    pub fn set_catalog(&self, catalog: Arc<Catalog>) {
+    pub fn set_catalog(&self, catalog: Arc<C>) {
         *self.catalog.write().unwrap() = catalog;
     }
 
@@ -112,7 +113,12 @@ impl Server {
     pub fn set_rrl_params(&mut self, rrl_params: Option<RrlParams>) {
         self.rrl = rrl_params.map(Rrl::new);
     }
+}
 
+impl<C> Server<C>
+where
+    C: Catalog,
+{
     /// Handles a received DNS message. This is the API through which
     /// I/O providers submit messages.
     ///
@@ -182,7 +188,7 @@ impl Server {
         // handle_message_with_context method then finishes processing
         // and response creation.
         let catalog = self.catalog();
-        let mut context = Context::new(&catalog, received, received_info, response);
+        let mut context = Context::new(catalog.as_ref(), received, received_info, response);
         self.handle_message_with_context(&mut context);
 
         // The final step is to apply response rate-limiting (RRL) if
@@ -206,7 +212,7 @@ impl Server {
     /// opcode-specific processing. At the conclusion of this method,
     /// the response (if any) has been prepared. Post-processing occurs
     /// once this returns to [`Server::handle_message`].
-    fn handle_message_with_context<'s>(&'s self, context: &mut Context<'s, '_>) {
+    fn handle_message_with_context(&self, context: &mut Context<C>) {
         // Read the question, if any. Note that most current
         // implementations ignore messages with QDCOUNT > 1, so we'll do
         // the same.
@@ -426,9 +432,9 @@ pub enum Response {
 /// Contains data involved in DNS message-handling. This includes the
 /// received message and the response under construction, as well as
 /// other data set or consumed at different stages of the process.
-struct Context<'c, 'b> {
+struct Context<'c, 'b, C> {
     // Snapshot of the catalog at the beginning of processing:
-    catalog: &'c Catalog,
+    catalog: &'c C,
 
     // Information on the received message:
     received: Reader<'b>,
@@ -436,7 +442,7 @@ struct Context<'c, 'b> {
     question: Option<Question>,
 
     // Data recorded during processing:
-    source_of_synthesis: Option<&'c Name>,
+    source_of_synthesis: Option<Cow<'c, Name>>,
 
     // Information on the response:
     response: Writer<'b>,
@@ -444,10 +450,10 @@ struct Context<'c, 'b> {
     send_response: bool,
 }
 
-impl<'c, 'b> Context<'c, 'b> {
+impl<'c, 'b, C> Context<'c, 'b, C> {
     /// Creates a new `Context`.
     fn new(
-        catalog: &'c Catalog,
+        catalog: &'c C,
         received: Reader<'b>,
         received_info: ReceivedInfo,
         response: Writer<'b>,
@@ -537,17 +543,20 @@ type ProcessingResult<T> = Result<T, ProcessingError>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::{HashMapTreeCatalog, HashMapTreeZone};
+
+    type CatalogImpl = HashMapTreeCatalog<HashMapTreeZone, ()>;
 
     #[test]
     fn set_edns_udp_payload_size_enforces_min() {
-        let mut server = Server::new(Arc::new(Catalog::new()));
+        let mut server = Server::new(Arc::new(CatalogImpl::new()));
         assert!(server.set_edns_udp_payload_size(256).is_err());
     }
 
     #[test]
     #[should_panic(expected = "the response buffer is not large enough")]
     fn handle_message_rejects_short_buffers_for_tcp() {
-        let server = Server::new(Arc::new(Catalog::new()));
+        let server = Server::new(Arc::new(CatalogImpl::new()));
         let received_info = ReceivedInfo::new(Ipv4Addr::LOCALHOST.into(), Transport::Tcp);
         let mut not_quite_large_enough = [0; u16::MAX as usize - 1];
         server.handle_message(&[], received_info, &mut not_quite_large_enough);
@@ -556,7 +565,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "the response buffer is not large enough")]
     fn handle_message_rejects_short_buffers_for_udp() {
-        let server = Server::new(Arc::new(Catalog::new()));
+        let server = Server::new(Arc::new(CatalogImpl::new()));
         let received_info = ReceivedInfo::new(Ipv4Addr::LOCALHOST.into(), Transport::Udp);
         let mut not_quite_large_enough = vec![0; server.edns_udp_payload_size() as usize - 1];
         server.handle_message(&[], received_info, &mut not_quite_large_enough);

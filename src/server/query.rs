@@ -18,14 +18,20 @@ use arrayvec::ArrayVec;
 
 use super::{Context, ProcessingError, ProcessingResult, Server, Transport};
 use crate::class::Class;
+use crate::db::catalog::{self, Catalog};
+use crate::db::zone::{
+    LookupAddrsResult, LookupAllResult, LookupOptions, LookupResult, SingleRrset, Zone,
+};
 use crate::message::{writer, Qclass, Qtype, Rcode, Writer};
 use crate::name::Name;
-use crate::rr::{Rdata, Rrset, RrsetList, Ttl, Type};
-use crate::zone::{CatalogEntry, LookupAllResult, LookupResult, Zone};
+use crate::rr::{Rdata, Ttl, Type};
 
-impl Server {
+impl<C> Server<C>
+where
+    C: Catalog,
+{
     /// Handles a DNS message with opcode QUERY.
-    pub(super) fn handle_query<'s>(&'s self, context: &mut Context<'s, '_>) {
+    pub(super) fn handle_query(&self, context: &mut Context<C>) {
         // If there is no question, then that's a FORMERR.
         let question = match context.question {
             Some(ref q) => q,
@@ -56,8 +62,8 @@ impl Server {
             .catalog
             .lookup(&question.qname, Class::from(question.qclass))
         {
-            Some(CatalogEntry::Loaded(zone)) => zone,
-            Some(CatalogEntry::NotYetLoaded(_, _) | CatalogEntry::FailedToLoad(_, _)) => {
+            Some(catalog::Entry::Loaded(zone, _)) => zone,
+            Some(catalog::Entry::NotYetLoaded(_, _, _) | catalog::Entry::FailedToLoad(_, _, _)) => {
                 context.response.set_rcode(Rcode::SERVFAIL);
                 return;
             }
@@ -71,7 +77,7 @@ impl Server {
     }
 
     /// Handles a non-AXFR DNS query.
-    fn handle_non_axfr_query<'c>(&self, zone: &'c Zone, context: &mut Context<'c, '_>) {
+    fn handle_non_axfr_query<'c>(&self, zone: &'c C::ZoneImpl, context: &mut Context<'c, '_, C>) {
         let question = context.question.as_ref().unwrap();
         let result = if question.qtype == Qtype::ANY {
             answer_any(zone, context)
@@ -107,26 +113,39 @@ impl Server {
 
 /// Answers a query for a specific RR type once the appropriate zone to
 /// search has been determined.
-fn answer<'c>(zone: &'c Zone, context: &mut Context<'c, '_>) -> ProcessingResult<()> {
+fn answer<'c, C>(zone: &'c C::ZoneImpl, context: &mut Context<'c, '_, C>) -> ProcessingResult<()>
+where
+    C: Catalog,
+{
     let question = context.question.as_ref().unwrap();
     let qname = &question.qname;
     let rr_type = question.qtype.into();
 
-    match zone.lookup(qname, rr_type) {
+    let lookup_options = LookupOptions {
+        unchecked: true,
+        search_below_cuts: false,
+    };
+    match zone.lookup(qname, rr_type, lookup_options) {
         LookupResult::Found(found) => {
             context.source_of_synthesis = found.source_of_synthesis;
             context.response.set_aa(true);
-            context.response.add_answer_rrset(qname, found.rrset)?;
-            do_additional_section_processing(zone, found.rrset, &mut context.response)
+            context.response.add_answer_rrset(
+                qname,
+                rr_type,
+                zone.class(),
+                found.data.ttl,
+                &found.data.rdatas,
+            )?;
+            do_additional_section_processing(zone, rr_type, &found.data, &mut context.response)
         }
         LookupResult::Cname(cname) => {
             context.source_of_synthesis = cname.source_of_synthesis;
-            do_cname(zone, qname, cname.rrset, rr_type, &mut context.response)
+            do_cname(zone, qname, &cname.rrset, rr_type, &mut context.response)
         }
         LookupResult::Referral(referral) => do_referral(
             zone,
-            referral.child_zone,
-            referral.ns_rrset,
+            &referral.child_zone,
+            &referral.ns_rrset,
             &mut context.response,
         ),
         LookupResult::NoRecords(no_records) => {
@@ -145,17 +164,34 @@ fn answer<'c>(zone: &'c Zone, context: &mut Context<'c, '_>) -> ProcessingResult
 
 /// Answers a query with QTYPE * (ANY) once the appropriate zone to
 /// search has been determined.
-fn answer_any<'c>(zone: &'c Zone, context: &mut Context<'c, '_>) -> ProcessingResult<()> {
+fn answer_any<'c, C>(
+    zone: &'c C::ZoneImpl,
+    context: &mut Context<'c, '_, C>,
+) -> ProcessingResult<()>
+where
+    C: Catalog,
+{
     let question = context.question.as_ref().unwrap();
     let qname = &question.qname;
 
-    match zone.lookup_all(qname) {
+    let lookup_options = LookupOptions {
+        unchecked: true,
+        search_below_cuts: false,
+    };
+    match zone.lookup_all(qname, lookup_options) {
         LookupAllResult::Found(found) => {
             context.source_of_synthesis = found.source_of_synthesis;
             context.response.set_aa(true);
+            let class = zone.class();
             let mut n_added = 0;
-            for rrset in found.rrsets.iter() {
-                context.response.add_answer_rrset(qname, rrset)?;
+            for rrset in found.data {
+                context.response.add_answer_rrset(
+                    qname,
+                    rrset.rr_type,
+                    class,
+                    rrset.ttl,
+                    &rrset.rdatas,
+                )?;
                 n_added += 1;
             }
             if n_added == 0 {
@@ -165,8 +201,8 @@ fn answer_any<'c>(zone: &'c Zone, context: &mut Context<'c, '_>) -> ProcessingRe
         }
         LookupAllResult::Referral(referral) => do_referral(
             zone,
-            referral.child_zone,
-            referral.ns_rrset,
+            &referral.child_zone,
+            &referral.ns_rrset,
             &mut context.response,
         ),
         LookupAllResult::NxDomain => {
@@ -225,9 +261,9 @@ type PreviousOwners = ArrayVec<Box<Name>, { MAX_CNAME_CHAIN_LEN - 1 }>;
 /// Additionally, loops in the chain will be detected and will trigger a
 /// SERVFAIL.
 fn do_cname(
-    zone: &Zone,
+    zone: &impl Zone,
     qname: &Name,
-    cname_rrset: &Rrset,
+    cname_rrset: &SingleRrset,
     rr_type: Type,
     response: &mut Writer,
 ) -> ProcessingResult<()> {
@@ -235,7 +271,13 @@ fn do_cname(
     // the first owner name in the answer section. Thus, the AA bit
     // should be set here.
     response.set_aa(true);
-    response.add_answer_rrset(qname, cname_rrset)?;
+    response.add_answer_rrset(
+        qname,
+        Type::CNAME,
+        zone.class(),
+        cname_rrset.ttl,
+        &cname_rrset.rdatas,
+    )?;
     follow_cname_1(zone, qname, cname_rrset, rr_type, response, ArrayVec::new())
 }
 
@@ -243,15 +285,16 @@ fn do_cname(
 /// `Box<Name>` from the CNAME RRset and checking that the CNAME has not
 /// already been looked up while processing the current chain.
 fn follow_cname_1(
-    zone: &Zone,
+    zone: &impl Zone,
     qname: &Name,
-    cname_rrset: &Rrset,
+    cname_rrset: &SingleRrset,
     rr_type: Type,
     response: &mut Writer,
     owners_seen: PreviousOwners,
 ) -> ProcessingResult<()> {
     if let Some(cname) = cname_rrset
-        .rdatas()
+        .rdatas
+        .iter()
         .next()
         .map(|rdata| Name::try_from_uncompressed_all(rdata.octets()))
         .and_then(Result::ok)
@@ -270,7 +313,7 @@ fn follow_cname_1(
 /// Step 2 of the CNAME-following process. This is the point where we
 /// actually re-run the query with the CNAME as the new QNAME.
 fn follow_cname_2(
-    zone: &Zone,
+    zone: &impl Zone,
     qname: &Name,
     cname: Box<Name>,
     rr_type: Type,
@@ -291,10 +334,16 @@ fn follow_cname_2(
     // that other zone. A smart resolver, therefore, won't trust any
     // records from the other zone that we might include. (See e.g. the
     // scrub_sanitize subroutine in Unbound.)
-    match zone.lookup(&cname, rr_type) {
+    match zone.lookup(&cname, rr_type, LookupOptions::default()) {
         LookupResult::Found(found) => {
-            response.add_answer_rrset(&cname, found.rrset)?;
-            do_additional_section_processing(zone, found.rrset, response)
+            response.add_answer_rrset(
+                &cname,
+                rr_type,
+                zone.class(),
+                found.data.ttl,
+                &found.data.rdatas,
+            )?;
+            do_additional_section_processing(zone, rr_type, &found.data, response)
         }
         LookupResult::Cname(next_cname) => {
             // The CNAME chain continues. If the CNAME chain is getting
@@ -304,12 +353,18 @@ fn follow_cname_2(
             if owners_seen.is_full() {
                 Err(ProcessingError::ServFail)
             } else {
-                response.add_answer_rrset(&cname, next_cname.rrset)?;
+                response.add_answer_rrset(
+                    &cname,
+                    Type::CNAME,
+                    zone.class(),
+                    next_cname.rrset.ttl,
+                    &next_cname.rrset.rdatas,
+                )?;
                 owners_seen.push(cname);
                 follow_cname_1(
                     zone,
                     qname,
-                    next_cname.rrset,
+                    &next_cname.rrset,
                     rr_type,
                     response,
                     owners_seen,
@@ -317,7 +372,7 @@ fn follow_cname_2(
             }
         }
         LookupResult::Referral(referral) => {
-            do_referral(zone, referral.child_zone, referral.ns_rrset, response)
+            do_referral(zone, &referral.child_zone, &referral.ns_rrset, response)
         }
         // Per RFC 6604 § 3, the RCODE is set based on the last query
         // cycle. Therefore, the no-records case should be NOERROR and
@@ -349,12 +404,18 @@ fn follow_cname_2(
 ///
 /// [RFC 1034 § 4.3.2]: https://datatracker.ietf.org/doc/html/rfc1034#section-4.3.2
 fn do_referral(
-    parent_zone: &Zone,
+    parent_zone: &impl Zone,
     child_zone: &Name,
-    ns_rrset: &Rrset,
+    ns_rrset: &SingleRrset,
     response: &mut Writer,
 ) -> ProcessingResult<()> {
-    response.add_authority_rrset(child_zone, ns_rrset)?;
+    response.add_authority_rrset(
+        child_zone,
+        Type::NS,
+        parent_zone.class(),
+        ns_rrset.ttl,
+        &ns_rrset.rdatas,
+    )?;
 
     // Now, we *must* include glue records; otherwise the delgation
     // would not work. If glue records do not fit, we fail (and allow
@@ -375,7 +436,7 @@ fn do_referral(
     // here.
     let mut glues = Vec::new();
     let mut additionals = Vec::new();
-    for rdata in ns_rrset.rdatas() {
+    for rdata in ns_rrset.rdatas.iter() {
         let nsdname = read_name_from_rdata(rdata, 0)?;
         if nsdname.eq_or_subdomain_of(child_zone) {
             glues.push(nsdname);
@@ -384,30 +445,14 @@ fn do_referral(
         }
     }
     for nsdname in glues {
-        add_referral_additional_addresses(parent_zone, &nsdname, response)?;
+        add_additional_addresses(parent_zone, &nsdname, true, response)?;
     }
     for nsdname in additionals {
         execute_allowing_truncation(|| {
-            add_referral_additional_addresses(parent_zone, &nsdname, response)
+            add_additional_addresses(parent_zone, &nsdname, true, response)
         })?;
     }
     Ok(())
-}
-
-/// Looks up `name` in `zone`, *including in non-authoritative data*,
-/// and adds any address (A or AAAA) RRsets found to the additional
-/// section of `response`. Note that, on error, some of the addresses
-/// may have been successfully written.
-fn add_referral_additional_addresses(
-    parent_zone: &Zone,
-    name: &Name,
-    response: &mut Writer,
-) -> writer::Result<()> {
-    if let LookupAllResult::Found(found) = parent_zone.lookup_all_raw(name, false) {
-        add_additional_address_rrsets(name, found.rrsets, response)
-    } else {
-        Ok(())
-    }
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -435,43 +480,39 @@ fn add_referral_additional_addresses(
 /// [RFC 2782]: https://datatracker.ietf.org/doc/html/rfc2782
 /// [RFC 2181 § 9]: https://datatracker.ietf.org/doc/html/rfc2181#section-9
 fn do_additional_section_processing(
-    zone: &Zone,
-    rrset: &Rrset,
+    zone: &impl Zone,
+    rr_type: Type,
+    rrset: &SingleRrset,
     response: &mut Writer,
 ) -> ProcessingResult<()> {
-    match rrset.rr_type {
+    match rr_type {
         Type::MB | Type::MD | Type::MF | Type::NS => {
-            for rdata in rrset.rdatas() {
+            for rdata in rrset.rdatas.iter() {
                 let name = read_name_from_rdata(rdata, 0)?;
-                execute_allowing_truncation(|| add_additional_addresses(zone, &name, response))?;
+                execute_allowing_truncation(|| {
+                    add_additional_addresses(zone, &name, false, response)
+                })?;
             }
         }
         Type::MX => {
-            for rdata in rrset.rdatas() {
+            for rdata in rrset.rdatas.iter() {
                 let name = read_name_from_rdata(rdata, 2)?;
-                execute_allowing_truncation(|| add_additional_addresses(zone, &name, response))?;
+                execute_allowing_truncation(|| {
+                    add_additional_addresses(zone, &name, false, response)
+                })?;
             }
         }
         Type::SRV => {
-            for rdata in rrset.rdatas() {
+            for rdata in rrset.rdatas.iter() {
                 let name = read_name_from_rdata(rdata, 6)?;
-                execute_allowing_truncation(|| add_additional_addresses(zone, &name, response))?;
+                execute_allowing_truncation(|| {
+                    add_additional_addresses(zone, &name, false, response)
+                })?;
             }
         }
         _ => (),
     };
     Ok(())
-}
-
-/// Looks up `name` in `zone` and adds any address (A or AAAA) RRsets
-/// found to the additional section of `response`. Note that, on error,
-/// some of the addresses may have been successfully written.
-fn add_additional_addresses(zone: &Zone, name: &Name, response: &mut Writer) -> writer::Result<()> {
-    if let LookupAllResult::Found(found) = zone.lookup_all(name) {
-        add_additional_address_rrsets(name, found.rrsets, response)
-    } else {
-        Ok(())
-    }
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -482,20 +523,18 @@ fn add_additional_addresses(zone: &Zone, name: &Name, response: &mut Writer) -> 
 /// `response` for negative caching [RFC 2308 § 3].
 ///
 /// [RFC 2308 § 3]: https://datatracker.ietf.org/doc/html/rfc2308#section-3
-fn add_negative_caching_soa(zone: &Zone, response: &mut Writer) -> ProcessingResult<()> {
+fn add_negative_caching_soa(zone: &impl Zone, response: &mut Writer) -> ProcessingResult<()> {
     // Note that per RFC 2308 § 3, the TTL we are to use is not the TTL
     // of the SOA record itself, but rather the SOA MINIMUM field.
     let soa_rrset = zone.soa().ok_or(ProcessingError::ServFail)?;
-    let soa_rdata = soa_rrset.rdatas().next().ok_or(ProcessingError::ServFail)?;
+    let soa_rdata = soa_rrset
+        .rdatas
+        .iter()
+        .next()
+        .ok_or(ProcessingError::ServFail)?;
     let ttl = Ttl::from(read_soa_minimum(soa_rdata)?);
     response
-        .add_authority_rr(
-            zone.name(),
-            soa_rrset.rr_type,
-            soa_rrset.class,
-            ttl,
-            soa_rdata,
-        )
+        .add_authority_rr(zone.name(), Type::SOA, zone.class(), ttl, soa_rdata)
         .map_err(Into::into)
 }
 
@@ -517,17 +556,37 @@ fn read_soa_minimum(rdata: &Rdata) -> ProcessingResult<u32> {
 // HELPERS - MISCELLEANEOUS                                           //
 ////////////////////////////////////////////////////////////////////////
 
-/// A helper that adds A and AAAA RRsets in `rrsets` to the additional
-/// section of `response`. On error (including truncation), note that some
-/// addresses may have been successfully written.
-fn add_additional_address_rrsets(
+/// Looks up `name` in `zone` and adds any address (A or AAAA) RRsets
+/// found to the additional section of `response`. Note that, on error,
+/// some of the addresses may have been successfully written.
+fn add_additional_addresses(
+    zone: &impl Zone,
     name: &Name,
-    rrsets: &RrsetList,
+    search_below_cuts: bool,
     response: &mut Writer,
 ) -> writer::Result<()> {
-    for rrset in rrsets.iter() {
-        if rrset.rr_type == Type::A || rrset.rr_type == Type::AAAA {
-            response.add_additional_rrset(name, rrset)?;
+    let lookup_options = LookupOptions {
+        unchecked: false,
+        search_below_cuts,
+    };
+    if let LookupAddrsResult::Found(found) = zone.lookup_addrs(name, lookup_options) {
+        if let Some(a_rrset) = found.data.a_rrset {
+            response.add_additional_rrset(
+                name,
+                Type::A,
+                zone.class(),
+                a_rrset.ttl,
+                &a_rrset.rdatas,
+            )?;
+        }
+        if let Some(aaaa_rrset) = found.data.aaaa_rrset {
+            response.add_additional_rrset(
+                name,
+                Type::AAAA,
+                zone.class(),
+                aaaa_rrset.ttl,
+                &aaaa_rrset.rdatas,
+            )?;
         }
     }
     Ok(())
@@ -561,7 +620,8 @@ fn read_name_from_rdata(rdata: &Rdata, start: usize) -> ProcessingResult<Box<Nam
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::zone::GluePolicy;
+    use crate::db::zone::{GluePolicy, LookupOptions};
+    use crate::db::HashMapTreeZone;
 
     ////////////////////////////////////////////////////////////////////
     // CNAME-FOLLOWING TESTS                                          //
@@ -589,30 +649,30 @@ mod tests {
         test_cname(zone, new_name('a'), Err(ProcessingError::ServFail));
     }
 
-    fn test_cname(zone: Zone, owner: Box<Name>, expected_result: ProcessingResult<()>) {
+    fn test_cname(zone: HashMapTreeZone, owner: Box<Name>, expected_result: ProcessingResult<()>) {
         let mut buf = [0; 512];
         let mut writer = Writer::try_from(&mut buf[..]).unwrap();
-        let cname_rrset = match zone.lookup(&owner, Type::CNAME) {
-            LookupResult::Found(found) => found.rrset,
+        let cname_rrset = match zone.lookup(&owner, Type::CNAME, LookupOptions::default()) {
+            LookupResult::Found(found) => found.data,
             _ => panic!(),
         };
         assert_eq!(
-            do_cname(&zone, &owner, cname_rrset, Type::A, &mut writer),
-            expected_result
+            do_cname(&zone, &owner, &cname_rrset, Type::A, &mut writer),
+            expected_result,
         );
     }
 
-    fn make_chain(zone: &mut Zone, len: usize) {
+    fn make_chain(zone: &mut HashMapTreeZone, len: usize) {
         let owners = ('a'..'z').collect::<Vec<char>>();
         for i in 0..len {
             add_cname_to_zone(zone, owners[i], owners[i + 1]);
         }
     }
 
-    fn new_zone() -> Zone {
+    fn new_zone() -> HashMapTreeZone {
         let apex: Box<Name> = "quandary.test.".parse().unwrap();
         let rdata = <&Rdata>::try_from(&[0; 22]).unwrap();
-        let mut zone = Zone::new(apex.clone(), Class::IN, GluePolicy::Narrow);
+        let mut zone = HashMapTreeZone::new(apex.clone(), Class::IN, GluePolicy::Narrow);
         zone.add(&apex, Type::SOA, Class::IN, Ttl::from(0), rdata)
             .unwrap();
         zone
@@ -622,7 +682,7 @@ mod tests {
         (owner.to_string() + ".quandary.test.").parse().unwrap()
     }
 
-    fn add_cname_to_zone(zone: &mut Zone, owner: char, target: char) {
+    fn add_cname_to_zone(zone: &mut HashMapTreeZone, owner: char, target: char) {
         let owner = new_name(owner);
         let target = new_name(target);
         let rdata = <&Rdata>::try_from(target.wire_repr()).unwrap();

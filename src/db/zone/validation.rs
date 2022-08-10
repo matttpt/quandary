@@ -27,14 +27,14 @@
 //! 5. ([Erratum 5626]) At least one NS record must be present at the
 //!    zone apex.
 //!
-//! Check 1 is handled when records are added with [`Zone::add`]. Check
-//! 4 seems not to be implemented in the BIND and Knot-DNS zone
-//! validators, and indeed such "occluded" information may result from
-//! the installation of an NS record through dynamic DNS updates (see
-//! paragraph 7.13 of [RFC 2136]). Therefore, we do not implement it
-//! here. The remaining checks are implemented in [Zone::validate].
-//! (It should be noted that check 3 is performed in accordance with the
-//! zone's [`GluePolicy`](super::GluePolicy).)
+//! Check 1 is enforced by the [`Zone`] API. Check 4 seems not to be
+//! implemented in the BIND and Knot-DNS zone validators, and indeed
+//! such "occluded" information may result from the installation of an
+//! NS record through dynamic DNS updates (see paragraph 7.13 of
+//! [RFC 2136]). Therefore, we do not implement it here. The remaining
+//! checks are implemented in [`Zone::validate`]. (It should be noted
+//! that check 3 is performed in accordance with the zone's
+//! [`GluePolicy`](super::GluePolicy).)
 //!
 //! In addition, the following checks are also implemented in
 //! [`Zone::validate`]:
@@ -51,9 +51,7 @@
 //!     undefined (warning only).
 //!
 //! Finally, the following checks (in addition to RFC 1035's check 1)
-//! are enforced by [`Zone::add`], since the [`Zone`] data structure
-//! (and the [`Rrset`](crate::rr::Rrset)s it contains) cannot represent a
-//! zone with these errors:
+//! are enforced by the design of the [`Zone`] API:
 //!
 //! 11. The owners of all records are at or below the zone apex.
 //! 12. The TTL of each record in an RRset is the same (as required by
@@ -68,9 +66,10 @@
 use std::fmt;
 
 use crate::name::Name;
-use crate::rr::{RrsetList, Type};
+use crate::rr::Type;
 
-use super::{Error, GluePolicy, LookupAllResult, Zone, ZoneNode};
+use super::super::Error;
+use super::{GluePolicy, IteratedRrset, LookupAddrsResult, LookupOptions, Zone};
 
 ////////////////////////////////////////////////////////////////////////
 // VALIDATION ISSUES                                                  //
@@ -141,150 +140,149 @@ impl fmt::Display for ValidationIssue<'_> {
 // VALIDATION LOGIC                                                   //
 ////////////////////////////////////////////////////////////////////////
 
-impl Zone {
-    /// Checks a zone for semantic errors and warnings (other than those
-    /// that are caught in [`Zone::add`]). See [`ValidationIssue`] for
-    /// the kinds of errors and warnings that this method returns.
-    pub fn validate(&self) -> Result<Vec<ValidationIssue>, Error> {
-        let mut issues = Vec::new();
+/// Implements zone validation; this does the real work of
+/// [`Zone::validate`].
+pub fn validate<Z>(zone: &Z) -> Result<Vec<ValidationIssue>, Error>
+where
+    Z: Zone + ?Sized,
+{
+    let mut issues = Vec::new();
 
-        // Check 2: there must be exactly one SOA record for the zone.
-        if let Some(soa_rrset) = self.soa() {
-            if soa_rrset.rdatas().count() != 1 {
-                issues.push(ValidationIssue::TooManyApexSoas);
-            }
-        } else {
-            issues.push(ValidationIssue::MissingApexSoa);
-        }
-
-        // Check 5: there must be at least one NS record for the zone.
-        if let Some(ns_rrset) = self.ns() {
-            for rdata in ns_rrset.rdatas() {
-                // Part of check 8: nameservers for the zone must have
-                // address records if they are within the zone.
-                let name =
-                    Name::try_from_uncompressed_all(rdata.octets()).or(Err(Error::InvalidRdata))?;
-                check_apex_ns_address(self, name, &mut issues);
-            }
-        } else {
-            issues.push(ValidationIssue::MissingApexNs);
-        }
-
-        // Now, we scan the nodes of the zone, which will perform the
-        // remaining checks.
-        scan_zone(self, &mut issues)?;
-        Ok(issues)
-    }
-}
-
-/// Helper to start a recursive scan an entire zone with [`scan_node`].
-fn scan_zone<'a>(zone: &'a Zone, issues: &mut Vec<ValidationIssue<'a>>) -> Result<(), Error> {
-    scan_node(zone, &zone.apex, true, true, issues)
-}
-
-/// Scans a node, checking for semantic errors and warnings. After
-/// checking the current node, all of its children are scanned. This
-/// implements checks 3 and 6 through 10.
-fn scan_node<'a>(
-    zone: &'a Zone,
-    node: &'a ZoneNode,
-    at_apex: bool,
-    in_authoritative: bool,
-    issues: &mut Vec<ValidationIssue<'a>>,
-) -> Result<(), Error> {
-    // Perform CNAME checks (6 and 7).
-    if let Some(cname_rrset) = node.data.rrsets.lookup(Type::CNAME) {
-        if node.data.rrsets.len() != 1 {
-            issues.push(ValidationIssue::OtherRecordsAtCname(&node.name));
-        }
-        if cname_rrset.rdatas().count() != 1 {
-            issues.push(ValidationIssue::DuplicateCname(&node.name));
-        }
-    }
-
-    // Perform the MX address check (9).
-    if let Some(mx_rrset) = node.data.rrsets.lookup(Type::MX) {
-        for rdata in mx_rrset.rdatas() {
-            let name = rdata
-                .octets()
-                .get(2..)
-                .map(Name::try_from_uncompressed_all)
-                .and_then(Result::ok)
-                .ok_or(Error::InvalidRdata)?;
-            check_mx_address(zone, name, issues);
-        }
-    }
-
-    // Perform the NS-at-wildcard check (10).
-    let maybe_ns_rrset = node.data.rrsets.lookup(Type::NS);
-    if maybe_ns_rrset.is_some() && node.name.is_wildcard() {
-        issues.push(ValidationIssue::NsAtWildcard(&node.name));
-    }
-
-    // Perform glue (3) and in-zone NS address (8) checks.
-    // TODO: should we also check occluded NS records, or just NS
-    //       records currently in authoritative data as we do now?
-    let at_delegation_point;
-    if !at_apex && in_authoritative {
-        if let Some(ns_rrset) = maybe_ns_rrset {
-            at_delegation_point = false;
-            for rdata in ns_rrset.rdatas() {
-                let nsdname =
-                    Name::try_from_uncompressed_all(rdata.octets()).or(Err(Error::InvalidRdata))?;
-                check_delegation_ns_address(zone, nsdname, &node.name, issues);
-            }
-        } else {
-            at_delegation_point = true;
+    // Check 2: there must be exactly one SOA record for the zone.
+    if let Some(soa_rrset) = zone.soa() {
+        if soa_rrset.rdatas.iter().count() != 1 {
+            issues.push(ValidationIssue::TooManyApexSoas);
         }
     } else {
-        at_delegation_point = true;
+        issues.push(ValidationIssue::MissingApexSoa);
     }
 
-    for child in node.children.values() {
-        scan_node(zone, child, false, at_delegation_point, issues)?;
+    // Check 5: there must be at least one NS record for the zone.
+    if let Some(ns_rrset) = zone.ns() {
+        for rdata in ns_rrset.rdatas.iter() {
+            // Part of check 8: nameservers for the zone must have
+            // address records if they are within the zone.
+            let name =
+                Name::try_from_uncompressed_all(rdata.octets()).or(Err(Error::InvalidRdata))?;
+            check_apex_ns_address(zone, name, &mut issues);
+        }
+    } else {
+        issues.push(ValidationIssue::MissingApexNs);
+    }
+
+    // Now, we scan the RRsets of the zone, which will perform the
+    // remaining checks.
+    for (owner, rrsets) in zone.iter_by_node() {
+        scan_node(zone, owner, rrsets.collect(), &mut issues)?;
+    }
+    Ok(issues)
+}
+
+/// Scans a node, checking for semantic errors and warnings. This
+/// implements checks 3 and 6 through 10.
+fn scan_node<'a, Z>(
+    zone: &Z,
+    owner: &'a Name,
+    rrsets: Vec<IteratedRrset>,
+    issues: &mut Vec<ValidationIssue<'a>>,
+) -> Result<(), Error>
+where
+    Z: Zone + ?Sized,
+{
+    for rrset in rrsets.iter() {
+        match rrset.rr_type {
+            Type::CNAME => {
+                // Perform CNAME checks (6 and 7).
+                if rrsets.len() != 1 {
+                    issues.push(ValidationIssue::OtherRecordsAtCname(owner));
+                }
+                if rrset.rdatas.iter().count() != 1 {
+                    issues.push(ValidationIssue::DuplicateCname(owner));
+                }
+            }
+            Type::MX => {
+                // Perform the MX address check (9).
+                for rdata in rrset.rdatas.iter() {
+                    let name = rdata
+                        .octets()
+                        .get(2..)
+                        .map(Name::try_from_uncompressed_all)
+                        .and_then(Result::ok)
+                        .ok_or(Error::InvalidRdata)?;
+                    check_mx_address(zone, name, issues);
+                }
+            }
+            Type::NS => {
+                // Perform the NS-at-wildcard check (10).
+                if owner.is_wildcard() {
+                    issues.push(ValidationIssue::NsAtWildcard(owner));
+                }
+
+                // Perform glue (3) and in-zone NS address (8) checks.
+                // TODO: this currently checks occluded NS records,
+                //       since the implementation is easier this way.
+                //       But should we omit them?
+                let at_apex = owner.len() == zone.name().len();
+                if !at_apex {
+                    for rdata in rrset.rdatas.iter() {
+                        let nsdname = Name::try_from_uncompressed_all(rdata.octets())
+                            .or(Err(Error::InvalidRdata))?;
+                        check_delegation_ns_address(zone, nsdname, owner, issues);
+                    }
+                }
+            }
+            _ => (),
+        }
     }
     Ok(())
 }
 
 /// Ensures that, if an apex NS record specifies a nameserver whose name
 /// is in the zone, an address record for it is present (check 8).
-fn check_apex_ns_address(zone: &Zone, nsdname: Box<Name>, issues: &mut Vec<ValidationIssue>) {
-    match zone.lookup_all(&nsdname) {
-        LookupAllResult::Found(found) => {
-            if !has_address(found.rrsets) {
+fn check_apex_ns_address<Z>(zone: &Z, nsdname: Box<Name>, issues: &mut Vec<ValidationIssue>)
+where
+    Z: Zone + ?Sized,
+{
+    match zone.lookup_addrs(&nsdname, LookupOptions::default()) {
+        LookupAddrsResult::Found(found) => {
+            if found.data.a_rrset.is_none() && found.data.aaaa_rrset.is_none() {
                 issues.push(ValidationIssue::MissingNsAddress(nsdname));
             }
         }
-        LookupAllResult::WrongZone | LookupAllResult::Referral(_) => (),
-        LookupAllResult::NxDomain => issues.push(ValidationIssue::MissingNsAddress(nsdname)),
+        LookupAddrsResult::Cname(_) | LookupAddrsResult::NxDomain => {
+            issues.push(ValidationIssue::MissingNsAddress(nsdname))
+        }
+        LookupAddrsResult::Referral(_) | LookupAddrsResult::WrongZone => (),
     }
 }
 
 /// Ensures that, if required, `parent_zone` has an in-zone address
 /// record or glue record for `child_zone`'s nameserver `nsdname`
 /// specified in a delegation NS record (checks 3 and 8).
-fn check_delegation_ns_address(
-    parent_zone: &Zone,
+fn check_delegation_ns_address<Z>(
+    parent_zone: &Z,
     nsdname: Box<Name>,
     child_zone: &Name,
     issues: &mut Vec<ValidationIssue>,
-) {
-    match parent_zone.lookup_all(&nsdname) {
-        LookupAllResult::Found(found) => {
+) where
+    Z: Zone + ?Sized,
+{
+    match parent_zone.lookup_addrs(&nsdname, LookupOptions::default()) {
+        LookupAddrsResult::Found(found) => {
             // A glue record is not necessary, since nsdname is within
             // the parent zone itself. However, we ought to make sure
             // that the parent zone actually has addresses for the
             // nameserver! (This is check 8.)
-            if !has_address(found.rrsets) {
+            if found.data.a_rrset.is_none() && found.data.aaaa_rrset.is_none() {
                 issues.push(ValidationIssue::MissingNsAddress(nsdname));
             }
         }
-        LookupAllResult::Referral(referral) => {
+        LookupAddrsResult::Referral(referral) => {
             // The nameserver for the delegation is inside some child
             // zone (referral.child_zone) of parent_zone. Whether we
             // require glue depends on parent_zone's glue policy. (This
             // is check 3.)
-            match parent_zone.glue_policy {
+            match parent_zone.glue_policy() {
                 GluePolicy::Wide => {
                     // Glue is always needed.
                     check_glue(parent_zone, nsdname, issues);
@@ -292,31 +290,38 @@ fn check_delegation_ns_address(
                 GluePolicy::Narrow => {
                     // Glue is needed only if the child zone in which
                     // the nameserver resides is child_zone.
-                    if referral.child_zone == child_zone {
+                    if referral.child_zone.as_ref() == child_zone {
                         check_glue(parent_zone, nsdname, issues);
                     }
                 }
             }
         }
-        LookupAllResult::WrongZone => {
-            // A glue record is not necessary, since nsdname is outside
-            // the parent zone's hierarchy.
-        }
-        LookupAllResult::NxDomain => {
-            // Same as the LookupAllResult::Found case, except that we
+        LookupAddrsResult::Cname(_) | LookupAddrsResult::NxDomain => {
+            // Same as the LookupAddrsResult::Found case, except that we
             // know immediately that the parent zone lacks an address
             // for the nameserver.
             issues.push(ValidationIssue::MissingNsAddress(nsdname));
+        }
+        LookupAddrsResult::WrongZone => {
+            // A glue record is not necessary, since nsdname is outside
+            // the parent zone's hierarchy.
         }
     }
 }
 
 /// Checks that `parent_zone` contains a glue record for a child zone's
 /// nameserver `nsdname`.
-fn check_glue(parent_zone: &Zone, nsdname: Box<Name>, issues: &mut Vec<ValidationIssue>) {
-    match parent_zone.lookup_all_raw(&nsdname, false) {
-        LookupAllResult::Found(found) => {
-            if !has_address(found.rrsets) {
+fn check_glue<Z>(parent_zone: &Z, nsdname: Box<Name>, issues: &mut Vec<ValidationIssue>)
+where
+    Z: Zone + ?Sized,
+{
+    let lookup_options = LookupOptions {
+        unchecked: false,
+        search_below_cuts: true,
+    };
+    match parent_zone.lookup_addrs(&nsdname, lookup_options) {
+        LookupAddrsResult::Found(found) => {
+            if found.data.a_rrset.is_none() && found.data.aaaa_rrset.is_none() {
                 issues.push(ValidationIssue::MissingGlue(nsdname));
             }
         }
@@ -326,27 +331,21 @@ fn check_glue(parent_zone: &Zone, nsdname: Box<Name>, issues: &mut Vec<Validatio
 
 /// Ensures that, if an MX record specifies a mail exchanger whose name
 /// is in the zone, an address record for it is present (check 9).
-fn check_mx_address(zone: &Zone, name: Box<Name>, issues: &mut Vec<ValidationIssue>) {
-    match zone.lookup_all(&name) {
-        LookupAllResult::Found(found) => {
-            if !has_address(found.rrsets) {
+fn check_mx_address<Z>(zone: &Z, name: Box<Name>, issues: &mut Vec<ValidationIssue>)
+where
+    Z: Zone + ?Sized,
+{
+    match zone.lookup_addrs(&name, LookupOptions::default()) {
+        LookupAddrsResult::Found(found) => {
+            if found.data.a_rrset.is_none() && found.data.aaaa_rrset.is_none() {
                 issues.push(ValidationIssue::MissingMxAddress(name));
             }
         }
-        LookupAllResult::WrongZone | LookupAllResult::Referral(_) => (),
-        LookupAllResult::NxDomain => issues.push(ValidationIssue::MissingMxAddress(name)),
-    }
-}
-
-/// Helper to determine whether an [`RrsetList`] contains an address
-/// RRset (i.e., an A or AAAA RRset).
-fn has_address(rrsets: &RrsetList) -> bool {
-    for rrset in rrsets.iter() {
-        if rrset.rr_type == Type::A || rrset.rr_type == Type::AAAA {
-            return true;
+        LookupAddrsResult::Cname(_) | LookupAddrsResult::NxDomain => {
+            issues.push(ValidationIssue::MissingMxAddress(name))
         }
+        LookupAddrsResult::Referral(_) | LookupAddrsResult::WrongZone => (),
     }
-    false
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -360,6 +359,7 @@ mod tests {
     use super::super::{GluePolicy, Zone};
     use super::ValidationIssue;
     use crate::class::Class;
+    use crate::db::HashMapTreeZone;
     use crate::name::Name;
     use crate::rr::{Rdata, Ttl, Type};
 
@@ -402,12 +402,12 @@ mod tests {
         static ref SUBDEL_NS_RDATA: &'static Rdata = NS_SUBDEL.wire_repr().try_into().unwrap();
     }
 
-    fn add_rr(zone: &mut Zone, owner: &Name, rr_type: Type, rdata: &Rdata) {
+    fn add_rr(zone: &mut HashMapTreeZone, owner: &Name, rr_type: Type, rdata: &Rdata) {
         zone.add(owner, rr_type, Class::IN, Ttl::from(3600), rdata)
             .unwrap();
     }
 
-    fn add_basic_rrs(zone: &mut Zone) {
+    fn add_basic_rrs(zone: &mut HashMapTreeZone) {
         add_rr(zone, &APEX, Type::SOA, *APEX_SOA_RDATA);
         add_rr(zone, &APEX, Type::NS, *APEX_NS_RDATA);
         add_rr(zone, &NS, Type::A, *LOCALHOST_RDATA);
@@ -415,25 +415,25 @@ mod tests {
 
     #[test]
     fn validate_detects_missing_apex_soa() {
-        let mut zone = Zone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
+        let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
         add_rr(&mut zone, &APEX, Type::NS, *APEX_NS_RDATA);
         add_rr(&mut zone, &NS, Type::A, *LOCALHOST_RDATA);
         assert_eq!(
             zone.validate().unwrap(),
-            vec![ValidationIssue::MissingApexSoa]
+            vec![ValidationIssue::MissingApexSoa],
         );
     }
 
     #[test]
     fn validate_detects_too_many_soas() {
-        let mut zone = Zone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
+        let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
         add_rr(&mut zone, &APEX, Type::SOA, *APEX_SOA_RDATA);
         add_rr(&mut zone, &APEX, Type::SOA, *APEX_SOA_RDATA2);
         add_rr(&mut zone, &APEX, Type::NS, *APEX_NS_RDATA);
         add_rr(&mut zone, &NS, Type::A, *LOCALHOST_RDATA);
         assert_eq!(
             zone.validate().unwrap(),
-            vec![ValidationIssue::TooManyApexSoas]
+            vec![ValidationIssue::TooManyApexSoas],
         );
     }
 
@@ -441,17 +441,17 @@ mod tests {
     fn validate_detects_missing_glue() {
         // Narrow glue policy when the nameserver is within the child
         // zone: there should be an error.
-        let mut zone = Zone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
+        let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
         add_basic_rrs(&mut zone);
         add_rr(&mut zone, &SUBDEL, Type::NS, *SUBDEL_NS_RDATA);
         assert_eq!(
             zone.validate().unwrap(),
-            [ValidationIssue::MissingGlue(NS_SUBDEL.clone())]
+            [ValidationIssue::MissingGlue(NS_SUBDEL.clone())],
         );
 
         // Narrow glue policy when the nameserver is within a different
         // child zone: there should not be an error.
-        let mut zone = Zone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
+        let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
         add_basic_rrs(&mut zone);
         add_rr(&mut zone, &SUBDEL, Type::NS, *APEX_NS_RDATA);
         add_rr(&mut zone, &SUBDEL2, Type::NS, *SUBDEL_NS_RDATA);
@@ -459,29 +459,29 @@ mod tests {
 
         // Wide glue policy when the nameserver is within a different
         // child zone: there should still be an error.
-        let mut zone = Zone::new(APEX.clone(), Class::IN, GluePolicy::Wide);
+        let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Wide);
         add_basic_rrs(&mut zone);
         add_rr(&mut zone, &SUBDEL, Type::NS, *APEX_NS_RDATA);
         add_rr(&mut zone, &SUBDEL2, Type::NS, *SUBDEL_NS_RDATA);
         assert_eq!(
             zone.validate().unwrap(),
-            [ValidationIssue::MissingGlue(NS_SUBDEL.clone())]
+            [ValidationIssue::MissingGlue(NS_SUBDEL.clone())],
         );
     }
 
     #[test]
     fn validate_detects_missing_apex_ns() {
-        let mut zone = Zone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
+        let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
         add_rr(&mut zone, &APEX, Type::SOA, *APEX_SOA_RDATA);
         assert_eq!(
             zone.validate().unwrap(),
-            vec![ValidationIssue::MissingApexNs]
+            vec![ValidationIssue::MissingApexNs],
         );
     }
 
     #[test]
     fn validate_detects_multiple_cname() {
-        let mut zone = Zone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
+        let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
         add_basic_rrs(&mut zone);
         add_rr(
             &mut zone,
@@ -497,13 +497,13 @@ mod tests {
         );
         assert_eq!(
             zone.validate().unwrap(),
-            vec![ValidationIssue::DuplicateCname(&HOST1)]
+            vec![ValidationIssue::DuplicateCname(&HOST1)],
         );
     }
 
     #[test]
     fn validate_detects_other_records_at_cname() {
-        let mut zone = Zone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
+        let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
         add_basic_rrs(&mut zone);
         add_rr(
             &mut zone,
@@ -514,46 +514,46 @@ mod tests {
         add_rr(&mut zone, &HOST1, Type::A, *LOCALHOST_RDATA);
         assert_eq!(
             zone.validate().unwrap(),
-            vec![ValidationIssue::OtherRecordsAtCname(&HOST1)]
+            vec![ValidationIssue::OtherRecordsAtCname(&HOST1)],
         );
     }
 
     #[test]
     fn validate_detects_missing_ns_address() {
         // First case: the apex NS record is missing an address.
-        let mut zone = Zone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
+        let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
         add_rr(&mut zone, &APEX, Type::SOA, *APEX_SOA_RDATA);
         add_rr(&mut zone, &APEX, Type::NS, *APEX_NS_RDATA);
         assert_eq!(
             zone.validate().unwrap(),
-            vec![ValidationIssue::MissingNsAddress(NS.clone())]
+            vec![ValidationIssue::MissingNsAddress(NS.clone())],
         );
 
         // Second case: a delegation NS record which points to a name
         // within the zone is missing an address.
-        let mut zone = Zone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
+        let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
         add_basic_rrs(&mut zone);
         add_rr(&mut zone, &SUBDEL2, Type::NS, *SUBDEL_NS_RDATA);
         assert_eq!(
             zone.validate().unwrap(),
-            vec![ValidationIssue::MissingNsAddress(NS_SUBDEL.clone())]
+            vec![ValidationIssue::MissingNsAddress(NS_SUBDEL.clone())],
         );
     }
 
     #[test]
     fn validate_detects_missing_mx_address() {
-        let mut zone = Zone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
+        let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
         add_basic_rrs(&mut zone);
         add_rr(&mut zone, &APEX, Type::MX, *APEX_MX_RDATA);
         assert_eq!(
             zone.validate().unwrap(),
-            vec![ValidationIssue::MissingMxAddress(MX.clone())]
+            vec![ValidationIssue::MissingMxAddress(MX.clone())],
         );
     }
 
     #[test]
     fn validate_detects_ns_at_wildcard() {
-        let mut zone = Zone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
+        let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
         add_basic_rrs(&mut zone);
         add_rr(&mut zone, &NS_SUBDEL, Type::A, &LOCALHOST_RDATA);
         add_rr(&mut zone, &WILDCARD, Type::NS, &SUBDEL_NS_RDATA);

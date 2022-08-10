@@ -25,10 +25,10 @@ use log::{error, info, warn};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 
+use quandary::db::HashMapTreeCatalog;
 use quandary::io::socket::SUPPORTS_LOCAL_ADDRESS_SELECTION;
 use quandary::server::{RrlParams, Server};
 use quandary::thread::ThreadGroup;
-use quandary::zone::Catalog;
 
 use crate::args::RunArgs;
 use crate::config::{self, RrlConfig, ServerConfig};
@@ -87,7 +87,7 @@ fn try_running(run_args: RunArgs) -> Result<()> {
         .io
         .bind_provider(config.bind)
         .context("failed to bind sockets")?;
-    let mut server = Server::new(Arc::new(Catalog::new()));
+    let mut server = Server::new(Arc::new(HashMapTreeCatalog::new()));
     if let Some(ref server_config) = config.server {
         configure_server(&mut server, server_config)?;
     }
@@ -138,7 +138,7 @@ fn try_running(run_args: RunArgs) -> Result<()> {
     Ok(())
 }
 
-fn configure_server(server: &mut Server, config: &ServerConfig) -> Result<()> {
+fn configure_server<C>(server: &mut Server<C>, config: &ServerConfig) -> Result<()> {
     // Set the EDNS UDP payload size if it's configured.
     if let Some(size) = config.edns_udp_payload_size {
         server
@@ -154,7 +154,7 @@ fn configure_server(server: &mut Server, config: &ServerConfig) -> Result<()> {
     Ok(())
 }
 
-fn configure_rrl(server: &mut Server, config: &RrlConfig) -> Result<()> {
+fn configure_rrl<C>(server: &mut Server<C>, config: &RrlConfig) -> Result<()> {
     let mut rrl_params = RrlParams::new(
         config.noerror_rate,
         config.nxdomain_rate,

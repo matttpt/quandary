@@ -21,7 +21,9 @@ use anyhow::{anyhow, Context, Result};
 use log::Level::Warn;
 use log::{debug, error, log_enabled, warn};
 
-use quandary::zone::{Catalog, CatalogEntry, ValidationIssue, Zone};
+use quandary::db::catalog::Entry;
+use quandary::db::zone::ValidationIssue;
+use quandary::db::{HashMapTreeCatalog, HashMapTreeZone, Zone};
 use quandary::zone_file::fs::Parser;
 
 use crate::config::ZoneConfig;
@@ -31,8 +33,8 @@ use crate::config::ZoneConfig;
 const MAX_INCLUDE_DEPTH: usize = 16;
 
 /// Loads the zones configured in `zones`.
-pub fn load(zones: Vec<ZoneConfig>) -> Catalog {
-    let mut catalog = Catalog::new();
+pub fn load(zones: Vec<ZoneConfig>) -> HashMapTreeCatalog<HashMapTreeZone, ()> {
+    let mut catalog = HashMapTreeCatalog::new();
     let mut zones_failed = 0;
 
     for zone_config in zones {
@@ -44,7 +46,7 @@ pub fn load(zones: Vec<ZoneConfig>) -> Catalog {
         );
         match load_and_validate_zone(&zone_config) {
             Ok(zone) => {
-                catalog.replace(CatalogEntry::Loaded(Arc::new(zone)));
+                catalog.insert(Entry::Loaded(Arc::new(zone), ()));
             }
             Err(e) => {
                 let mut message = format!(
@@ -55,9 +57,10 @@ pub fn load(zones: Vec<ZoneConfig>) -> Catalog {
                     write!(message, "\n[{}] {}", i + 1, cause).unwrap();
                 }
                 error!("{}", message);
-                catalog.replace(CatalogEntry::FailedToLoad(
+                catalog.insert(Entry::FailedToLoad(
                     zone_config.name.0,
                     zone_config.class.0,
+                    (),
                 ));
                 zones_failed += 1;
             }
@@ -76,8 +79,8 @@ pub fn load(zones: Vec<ZoneConfig>) -> Catalog {
 }
 
 /// Loads and validates a single zone.
-fn load_and_validate_zone(zone_config: &ZoneConfig) -> Result<Zone> {
-    let mut zone = Zone::new(
+fn load_and_validate_zone(zone_config: &ZoneConfig) -> Result<HashMapTreeZone> {
+    let mut zone = HashMapTreeZone::new(
         zone_config.name.0.clone(),
         zone_config.class.0,
         zone_config.glue_policy.into(),
@@ -108,7 +111,7 @@ fn load_and_validate_zone(zone_config: &ZoneConfig) -> Result<Zone> {
 
 /// Validates a loaded zone. Errors and warnings are written to the log.
 /// Returns whether the zone is free of errors (but not warnings).
-fn validate_zone(zone: &Zone) -> Result<()> {
+fn validate_zone(zone: &HashMapTreeZone) -> Result<()> {
     let issues = zone
         .validate()
         .context("failed to run the validator on the zone")?;

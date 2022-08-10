@@ -29,6 +29,7 @@ use rand::Rng;
 
 use super::{Context, Transport};
 use crate::message::{ExtendedRcode, Opcode};
+use crate::name::Name;
 
 ////////////////////////////////////////////////////////////////////////
 // RRL PARAMETERS                                                     //
@@ -326,7 +327,7 @@ impl Rrl {
     /// provided destination, QNAME (or source of synthesis for
     /// responses generated through wildcard synthesis), and RCODE. The
     /// RRL tracking table is updated in the process.
-    pub(super) fn process_response(&self, context: &mut Context) {
+    pub(super) fn process_response<C>(&self, context: &mut Context<C>) {
         if !subject_to_rrl(context) {
             return;
         }
@@ -339,7 +340,7 @@ impl Rrl {
         let category = context.response.extended_rcode().into();
         let dest = context.received_info.source;
         let qname_hash = if category == Category::NoError {
-            let qname = if let Some(source_of_synthesis) = context.source_of_synthesis {
+            let qname: &Name = if let Some(source_of_synthesis) = &context.source_of_synthesis {
                 source_of_synthesis
             } else {
                 // If this response passed subject_to_rrl and is in this
@@ -463,7 +464,7 @@ impl From<ExtendedRcode> for Category {
 
 /// Determines whether the response being prepared in `context` is
 /// subject to RRL.
-fn subject_to_rrl(context: &Context) -> bool {
+fn subject_to_rrl<C>(context: &Context<C>) -> bool {
     context.send_response
         && context.received_info.transport == Transport::Udp
         && context.received.opcode() == Opcode::QUERY

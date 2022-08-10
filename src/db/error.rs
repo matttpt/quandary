@@ -12,13 +12,11 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-//! Implementation of the [`Error`] type for zone-related errors.
+//! Implementation of the [`Error`] type for database-related errors.
 
 use std::fmt;
 
-use crate::rr::rrset::RrsetListAddError;
-
-/// Errors that arise during operations on a [`Zone`](super::Zone).
+/// Errors that arise during database operations.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Error {
     NotInZone,
@@ -40,15 +38,6 @@ impl fmt::Display for Error {
             Self::InvalidRdata => {
                 f.write_str("the operation required RDATA parsing, and invalid RDATA was found")
             }
-        }
-    }
-}
-
-impl From<RrsetListAddError> for Error {
-    fn from(error: RrsetListAddError) -> Self {
-        match error {
-            RrsetListAddError::ClassMismatch => Self::ClassMismatch,
-            RrsetListAddError::TtlMismatch => Self::TtlMismatch,
         }
     }
 }
