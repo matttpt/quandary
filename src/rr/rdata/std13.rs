@@ -138,7 +138,7 @@ impl std::error::Error for CharacterStringTooLongError {}
 /// at the beginning of the provided buffer, returning the length of the
 /// string on the wire when successful.
 fn validate_character_string(octets: &[u8]) -> Result<usize, ReadRdataError> {
-    if let Some(len) = octets.get(0) {
+    if let Some(len) = octets.first() {
         let wire_len = 1 + *len as usize;
         if wire_len <= octets.len() {
             Ok(wire_len)

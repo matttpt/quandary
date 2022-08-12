@@ -663,7 +663,7 @@ mod tests {
     }
 
     fn make_chain(zone: &mut HashMapTreeZone, len: usize) {
-        let owners = ('a'..'z').collect::<Vec<char>>();
+        let owners = ('a'..='z').collect::<Vec<char>>();
         for i in 0..len {
             add_cname_to_zone(zone, owners[i], owners[i + 1]);
         }
