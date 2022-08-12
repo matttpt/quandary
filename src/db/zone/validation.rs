@@ -63,6 +63,7 @@
 //! [RFC 2181 § 5.2]: https://datatracker.ietf.org/doc/html/rfc2181#section-5.2
 //! [RFC 4592 § 4.2]: https://datatracker.ietf.org/doc/html/rfc4592#section-4.2
 
+use std::collections::HashSet;
 use std::fmt;
 
 use crate::name::Name;
@@ -137,6 +138,59 @@ impl fmt::Display for ValidationIssue<'_> {
 }
 
 ////////////////////////////////////////////////////////////////////////
+// VALIDATION ISSUES                                                  //
+////////////////////////////////////////////////////////////////////////
+
+/// Keeps track of [`ValidationIssue`]s found. This deduplicates issues
+/// that may be detected multiple times (specifically, names referenced
+/// in NS or MX records that are missing addresses).
+#[derive(Default)]
+struct IssueTracker<'a> {
+    issues: Vec<ValidationIssue<'a>>,
+    missing_ns: HashSet<Box<Name>>,
+    missing_mx: HashSet<Box<Name>>,
+    missing_glue: HashSet<Box<Name>>,
+}
+
+impl<'a> IssueTracker<'a> {
+    /// Registers an issue (with deduplication of certain issue types).
+    fn register(&mut self, issue: ValidationIssue<'a>) {
+        match issue {
+            ValidationIssue::MissingNsAddress(nsdname) => {
+                self.missing_ns.insert(nsdname);
+            }
+            ValidationIssue::MissingMxAddress(name) => {
+                self.missing_mx.insert(name);
+            }
+            ValidationIssue::MissingGlue(nsdname) => {
+                self.missing_glue.insert(nsdname);
+            }
+            _ => self.issues.push(issue),
+        }
+    }
+
+    /// Produces a [`Vec`] containing all issues found.
+    fn finish(mut self) -> Vec<ValidationIssue<'a>> {
+        self.issues.extend(
+            self.missing_ns
+                .into_iter()
+                .map(ValidationIssue::MissingNsAddress),
+        );
+        self.issues.extend(
+            self.missing_mx
+                .into_iter()
+                .map(ValidationIssue::MissingMxAddress),
+        );
+        self.issues.extend(
+            self.missing_glue
+                .into_iter()
+                .map(ValidationIssue::MissingGlue),
+        );
+        self.issues
+    }
+}
+
+////////////////////////////////////////////////////////////////////////
 // VALIDATION LOGIC                                                   //
 ////////////////////////////////////////////////////////////////////////
 
@@ -146,15 +200,15 @@ pub fn validate<Z>(zone: &Z) -> Result<Vec<ValidationIssue>, Error>
 where
     Z: Zone + ?Sized,
 {
-    let mut issues = Vec::new();
+    let mut issues = IssueTracker::default();
 
     // Check 2: there must be exactly one SOA record for the zone.
     if let Some(soa_rrset) = zone.soa() {
         if soa_rrset.rdatas.iter().count() != 1 {
-            issues.push(ValidationIssue::TooManyApexSoas);
+            issues.register(ValidationIssue::TooManyApexSoas);
         }
     } else {
-        issues.push(ValidationIssue::MissingApexSoa);
+        issues.register(ValidationIssue::MissingApexSoa);
     }
 
     // Check 5: there must be at least one NS record for the zone.
@@ -167,7 +221,7 @@ where
             check_apex_ns_address(zone, name, &mut issues);
         }
     } else {
-        issues.push(ValidationIssue::MissingApexNs);
+        issues.register(ValidationIssue::MissingApexNs);
     }
 
     // Now, we scan the RRsets of the zone, which will perform the
@@ -175,7 +229,7 @@ where
     for (owner, rrsets) in zone.iter_by_node() {
         scan_node(zone, owner, rrsets.collect(), &mut issues)?;
     }
-    Ok(issues)
+    Ok(issues.finish())
 }
 
 /// Scans a node, checking for semantic errors and warnings. This
@@ -184,7 +238,7 @@ fn scan_node<'a, Z>(
     zone: &Z,
     owner: &'a Name,
     rrsets: Vec<IteratedRrset>,
-    issues: &mut Vec<ValidationIssue<'a>>,
+    issues: &mut IssueTracker<'a>,
 ) -> Result<(), Error>
 where
     Z: Zone + ?Sized,
@@ -194,10 +248,10 @@ where
             Type::CNAME => {
                 // Perform CNAME checks (6 and 7).
                 if rrsets.len() != 1 {
-                    issues.push(ValidationIssue::OtherRecordsAtCname(owner));
+                    issues.register(ValidationIssue::OtherRecordsAtCname(owner));
                 }
                 if rrset.rdatas.iter().count() != 1 {
-                    issues.push(ValidationIssue::DuplicateCname(owner));
+                    issues.register(ValidationIssue::DuplicateCname(owner));
                 }
             }
             Type::MX => {
@@ -215,7 +269,7 @@ where
             Type::NS => {
                 // Perform the NS-at-wildcard check (10).
                 if owner.is_wildcard() {
-                    issues.push(ValidationIssue::NsAtWildcard(owner));
+                    issues.register(ValidationIssue::NsAtWildcard(owner));
                 }
 
                 // Perform glue (3) and in-zone NS address (8) checks.
@@ -239,18 +293,18 @@ where
 
 /// Ensures that, if an apex NS record specifies a nameserver whose name
 /// is in the zone, an address record for it is present (check 8).
-fn check_apex_ns_address<Z>(zone: &Z, nsdname: Box<Name>, issues: &mut Vec<ValidationIssue>)
+fn check_apex_ns_address<Z>(zone: &Z, nsdname: Box<Name>, issues: &mut IssueTracker)
 where
     Z: Zone + ?Sized,
 {
     match zone.lookup_addrs(&nsdname, LookupOptions::default()) {
         LookupAddrsResult::Found(found) => {
             if found.data.a_rrset.is_none() && found.data.aaaa_rrset.is_none() {
-                issues.push(ValidationIssue::MissingNsAddress(nsdname));
+                issues.register(ValidationIssue::MissingNsAddress(nsdname));
             }
         }
         LookupAddrsResult::Cname(_) | LookupAddrsResult::NxDomain => {
-            issues.push(ValidationIssue::MissingNsAddress(nsdname))
+            issues.register(ValidationIssue::MissingNsAddress(nsdname))
         }
         LookupAddrsResult::Referral(_) | LookupAddrsResult::WrongZone => (),
     }
@@ -263,7 +317,7 @@ fn check_delegation_ns_address<Z>(
     parent_zone: &Z,
     nsdname: Box<Name>,
     child_zone: &Name,
-    issues: &mut Vec<ValidationIssue>,
+    issues: &mut IssueTracker,
 ) where
     Z: Zone + ?Sized,
 {
@@ -274,7 +328,7 @@ fn check_delegation_ns_address<Z>(
             // that the parent zone actually has addresses for the
             // nameserver! (This is check 8.)
             if found.data.a_rrset.is_none() && found.data.aaaa_rrset.is_none() {
-                issues.push(ValidationIssue::MissingNsAddress(nsdname));
+                issues.register(ValidationIssue::MissingNsAddress(nsdname));
             }
         }
         LookupAddrsResult::Referral(referral) => {
@@ -300,7 +354,7 @@ fn check_delegation_ns_address<Z>(
             // Same as the LookupAddrsResult::Found case, except that we
             // know immediately that the parent zone lacks an address
             // for the nameserver.
-            issues.push(ValidationIssue::MissingNsAddress(nsdname));
+            issues.register(ValidationIssue::MissingNsAddress(nsdname));
         }
         LookupAddrsResult::WrongZone => {
             // A glue record is not necessary, since nsdname is outside
@@ -311,7 +365,7 @@ fn check_delegation_ns_address<Z>(
 
 /// Checks that `parent_zone` contains a glue record for a child zone's
 /// nameserver `nsdname`.
-fn check_glue<Z>(parent_zone: &Z, nsdname: Box<Name>, issues: &mut Vec<ValidationIssue>)
+fn check_glue<Z>(parent_zone: &Z, nsdname: Box<Name>, issues: &mut IssueTracker)
 where
     Z: Zone + ?Sized,
 {
@@ -322,27 +376,27 @@ where
     match parent_zone.lookup_addrs(&nsdname, lookup_options) {
         LookupAddrsResult::Found(found) => {
             if found.data.a_rrset.is_none() && found.data.aaaa_rrset.is_none() {
-                issues.push(ValidationIssue::MissingGlue(nsdname));
+                issues.register(ValidationIssue::MissingGlue(nsdname));
             }
         }
-        _ => issues.push(ValidationIssue::MissingGlue(nsdname)),
+        _ => issues.register(ValidationIssue::MissingGlue(nsdname)),
     }
 }
 
 /// Ensures that, if an MX record specifies a mail exchanger whose name
 /// is in the zone, an address record for it is present (check 9).
-fn check_mx_address<Z>(zone: &Z, name: Box<Name>, issues: &mut Vec<ValidationIssue>)
+fn check_mx_address<Z>(zone: &Z, name: Box<Name>, issues: &mut IssueTracker)
 where
     Z: Zone + ?Sized,
 {
     match zone.lookup_addrs(&name, LookupOptions::default()) {
         LookupAddrsResult::Found(found) => {
             if found.data.a_rrset.is_none() && found.data.aaaa_rrset.is_none() {
-                issues.push(ValidationIssue::MissingMxAddress(name));
+                issues.register(ValidationIssue::MissingMxAddress(name));
             }
         }
         LookupAddrsResult::Cname(_) | LookupAddrsResult::NxDomain => {
-            issues.push(ValidationIssue::MissingMxAddress(name))
+            issues.register(ValidationIssue::MissingMxAddress(name))
         }
         LookupAddrsResult::Referral(_) | LookupAddrsResult::WrongZone => (),
     }
