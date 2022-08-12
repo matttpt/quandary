@@ -14,7 +14,7 @@
 
 //! The [`HashMapTreeCatalog`] structure.
 
-use std::collections::HashMap;
+use std::collections::{hash_map, HashMap};
 
 use crate::class::Class;
 use crate::db::catalog::{Catalog, Entry};
@@ -44,11 +44,20 @@ impl<Z, M> HashMapTreeCatalog<Z, M> {
             roots_by_class: HashMap::new(),
         }
     }
-}
 
-impl<Z, M> Default for HashMapTreeCatalog<Z, M> {
-    fn default() -> Self {
-        Self::new()
+    /// Removes an [`Entry`] from the `Catalog`, returning the current
+    /// [`Entry`] for that name and class (if any).
+    pub fn remove(&mut self, name: &Name, class: Class) -> Option<Entry<Z, M>> {
+        match self.roots_by_class.entry(class) {
+            hash_map::Entry::Occupied(mut e) => {
+                let (entry, remove) = remove_in_class(e.get_mut(), name, name.len() - 1);
+                if remove {
+                    e.remove();
+                }
+                entry
+            }
+            hash_map::Entry::Vacant(_) => None,
+        }
     }
 }
 
@@ -57,7 +66,7 @@ where
     Z: Zone,
 {
     /// Adds an [`Entry`] to the `Catalog`, replacing and returning the
-    /// current [`Entry`] at that name (if any).
+    /// current [`Entry`] for that name and class (if any).
     pub fn insert(&mut self, entry: Entry<Z, M>) -> Option<Entry<Z, M>> {
         let root = self
             .roots_by_class
@@ -103,6 +112,35 @@ fn lookup_in_class<'a, Z, M>(
     }
 }
 
+/// Implements entry removal. The parameter `node` is the deepest node
+/// we have matched so far; this node corresponds to `name[level]`.
+fn remove_in_class<Z, M>(
+    node: &mut Node<Z, M>,
+    name: &Name,
+    level: usize,
+) -> (Option<Entry<Z, M>>, bool) {
+    if level == 0 {
+        // We've reached the entire name.
+        (node.data.take(), node.children.is_empty())
+    } else if let Some(subnode) = node.children.get_mut(&name[level - 1]) {
+        let (entry, remove) = remove_in_class(subnode, name, level - 1);
+        if remove {
+            node.children.remove(&name[level - 1]);
+            (entry, node.children.is_empty())
+        } else {
+            (entry, false)
+        }
+    } else {
+        (None, false)
+    }
+}
+
+impl<Z, M> Default for HashMapTreeCatalog<Z, M> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////
 // TESTS                                                              //
 ////////////////////////////////////////////////////////////////////////
@@ -144,5 +182,41 @@ mod tests {
             catalog.lookup(&y_x_quandary_test, Class::IN),
             Some(Entry::NotYetLoaded(name, _, _)) if name == &x_quandary_test,
         ));
+    }
+
+    #[test]
+    fn remove_works() {
+        let test: Box<Name> = "test.".parse().unwrap();
+        let quandary_test: Box<Name> = "quandary.test.".parse().unwrap();
+
+        let mut catalog = HashMapTreeCatalog::<HashMapTreeZone, ()>::new();
+        catalog.insert(Entry::NotYetLoaded(test.clone(), Class::IN, ()));
+        catalog.insert(Entry::NotYetLoaded(quandary_test.clone(), Class::IN, ()));
+
+        // Try removing the entry at test.; this should not remove
+        // the node, however! (We check this by ensuring that the
+        // quandary.test. entry still exists.)
+        assert!(matches!(
+            catalog.remove(&test, Class::IN),
+            Some(Entry::NotYetLoaded(name, Class::IN, ())) if name == test,
+        ));
+        assert!(catalog.get(&test, Class::IN).is_none());
+        assert!(catalog.get(&quandary_test, Class::IN).is_some());
+
+        // Try remove the entry at quandary.test.; all nodes should be
+        // deleted now, including the root, since the IN class now has
+        // no entries.
+        assert!(matches!(
+            catalog.remove(&quandary_test, Class::IN),
+            Some(Entry::NotYetLoaded(name, Class::IN, ())) if name == quandary_test,
+        ));
+        assert!(catalog.roots_by_class.get(&Class::IN).is_none());
+    }
+
+    #[test]
+    fn remove_on_nonexistent_class_works() {
+        let test: Box<Name> = "test.".parse().unwrap();
+        let mut catalog = HashMapTreeCatalog::<HashMapTreeZone, ()>::new();
+        assert!(catalog.remove(&test, Class::IN).is_none());
     }
 }
