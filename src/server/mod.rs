@@ -385,7 +385,8 @@ impl ReceivedInfo {
             original @ IpAddr::V4(_) => original,
             original @ IpAddr::V6(ipv6) => {
                 let octets = ipv6.octets();
-                if octets[10] == 0xff && octets[11] == 0xff {
+                if octets[0..10].iter().all(|o| *o == 0) && octets[10] == 0xff && octets[11] == 0xff
+                {
                     // This is an IPv4-mapped address.
                     IpAddr::V4(Ipv4Addr::new(
                         octets[12], octets[13], octets[14], octets[15],
