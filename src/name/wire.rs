@@ -16,7 +16,7 @@
 
 use arrayvec::ArrayVec;
 
-use super::{new_boxed_name, Error, Name, NameBuilder, MAX_LABEL_LEN, MAX_N_LABELS, MAX_WIRE_LEN};
+use super::{new_boxed_name, Error, Name, MAX_LABEL_LEN, MAX_N_LABELS, MAX_WIRE_LEN};
 
 ////////////////////////////////////////////////////////////////////////
 // VALIDATION AND PARSING OF UNCOMPRESSED ON-THE-WIRE NAMES           //
@@ -109,80 +109,50 @@ pub fn validate_uncompressed_name(octets: &[u8], use_all: bool) -> Result<usize,
 /// to be passed in `octets`. This is the implementation of
 /// [`Name::try_from_compressed`].
 pub fn parse_compressed_name(octets: &[u8], start: usize) -> Result<(Box<Name>, usize), Error> {
-    let mut builder = NameBuilder::new();
-    let mut chunk_start = start;
-    let mut finished = false;
+    let mut next_chunk = Some(start);
     let mut wire_len_of_first_chunk = None;
 
-    while !finished {
-        match parse_chunk(octets, chunk_start, &mut builder)? {
-            Chunk::Last(len) => {
-                wire_len_of_first_chunk.get_or_insert(len);
-                finished = true;
-            }
-            Chunk::Pointer(len, pointer) => {
-                wire_len_of_first_chunk.get_or_insert(len);
-                chunk_start = pointer as usize;
+    let mut label_offsets = ArrayVec::<u8, MAX_N_LABELS>::new();
+    let mut wire_repr = ArrayVec::<u8, MAX_WIRE_LEN>::new();
+
+    while let Some(chunk_start) = next_chunk {
+        let mut finished_with_chunk = false;
+        let mut index = chunk_start;
+
+        while !finished_with_chunk {
+            let len = octets[index];
+            if len & 0xc0 == 0xc0 {
+                next_chunk = Some(parse_pointer(octets, chunk_start, index)? as usize);
+                index += 2;
+                finished_with_chunk = true;
+            } else if len > (MAX_LABEL_LEN as u8) {
+                return Err(Error::LabelTooLong);
+            } else {
+                label_offsets.push(wire_repr.len() as u8);
+                let end_of_label = index + len as usize + 1;
+                if len == 0 {
+                    next_chunk = None;
+                    finished_with_chunk = true;
+                } else if end_of_label >= octets.len() {
+                    return Err(Error::UnexpectedEom);
+                }
+                wire_repr
+                    .try_extend_from_slice(&octets[index..end_of_label])
+                    .or(Err(Error::NameTooLong))?;
+                index = end_of_label;
             }
         }
+
+        wire_len_of_first_chunk.get_or_insert(index - chunk_start);
     }
 
-    Ok((builder.finish()?, wire_len_of_first_chunk.unwrap()))
-}
-
-/// We view compressed on-the-wire names in terms of a number of
-/// contiguous chunks; there may be multiple such chunks through the use
-/// of pointers. All but the last chunk end with a pointer; the last
-/// chunk ends with the null label.
-///
-/// This `enum` reports information about a parsed chunk.
-enum Chunk {
-    /// This chunk is the last chunk in the name. The length in octets
-    /// is reported.
-    Last(usize),
-
-    /// This chunk ends with a pointer, so it is not the last. The length
-    /// in octets and the value of the pointer are reported.
-    Pointer(usize, u16),
-}
-
-/// Parses a chunk of a compressed on-the-wire name in `octets` starting
-/// at index `start`. Labels contained in the chunk are written to the
-/// passed [`NameBuilder`]. On success, details about the chunk are
-/// returned. Note that on failure, the state of the [`NameBuilder`] is
-/// undefined, since the calling code above doesn't need to try to
-/// recover.
-fn parse_chunk(octets: &[u8], start: usize, builder: &mut NameBuilder) -> Result<Chunk, Error> {
-    let mut index = start;
-    let mut finished = false;
-
-    while !finished && index < octets.len() {
-        let len = octets[index];
-        if len & 0xc0 == 0xc0 {
-            let pointer = parse_pointer(octets, start, index)?;
-            return Ok(Chunk::Pointer(index + 2 - start, pointer));
-        } else if len > (MAX_LABEL_LEN as u8) {
-            return Err(Error::LabelTooLong);
-        } else if len == 0 {
-            finished = true;
-            index += 1;
-        } else {
-            let content_start = index + 1;
-            let content_end = index + 1 + len as usize;
-            if content_end > octets.len() {
-                return Err(Error::UnexpectedEom);
-            }
-            builder.try_push_slice(&octets[content_start..content_end])?;
-            builder.next_label()?;
-            index = content_end;
-        }
-    }
-
-    if !finished {
-        Err(Error::UnexpectedEom)
-    } else {
-        Ok(Chunk::Last(index - start))
-    }
+    let name = unsafe {
+        // SAFETY: we've checked that this is a valid domain name, and
+        // we promise that we've both reconstructed the uncompressed
+        // form and computed label_offsets correctly.
+        new_boxed_name(wire_repr.len(), &label_offsets, &[wire_repr.as_slice()])
+    };
+    Ok((name, wire_len_of_first_chunk.unwrap()))
 }
 
 /// Parses a pointer at `index` in `octets`. This also checks that the
