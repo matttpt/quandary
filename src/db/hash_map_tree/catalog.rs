@@ -59,6 +59,14 @@ impl<Z, M> HashMapTreeCatalog<Z, M> {
             hash_map::Entry::Vacant(_) => None,
         }
     }
+
+    /// Returns an iterator over the `HashMapTreeCatalog`.
+    pub fn iter(&self) -> impl Iterator<Item = &Entry<Z, M>> {
+        self.roots_by_class.values().flat_map(|root| {
+            root.iter()
+                .filter_map(|(_, entry_option)| entry_option.as_ref())
+        })
+    }
 }
 
 impl<Z, M> HashMapTreeCatalog<Z, M>
@@ -218,5 +226,40 @@ mod tests {
         let test: Box<Name> = "test.".parse().unwrap();
         let mut catalog = HashMapTreeCatalog::<HashMapTreeZone, ()>::new();
         assert!(catalog.remove(&test, Class::IN).is_none());
+    }
+
+    #[test]
+    fn iter_works() {
+        let test: Box<Name> = "test.".parse().unwrap();
+        let quandary_test: Box<Name> = "quandary.test.".parse().unwrap();
+        let invalid: Box<Name> = "invalid.".parse().unwrap();
+        let localhost: Box<Name> = "localhost.".parse().unwrap();
+
+        let mut catalog = HashMapTreeCatalog::new();
+        let test_zone = HashMapTreeZone::new(test.clone(), Class::IN, GluePolicy::Narrow);
+        catalog.insert(Entry::Loaded(Arc::new(test_zone), ()));
+        catalog.insert(Entry::NotYetLoaded(quandary_test.clone(), Class::IN, ()));
+        catalog.insert(Entry::FailedToLoad(invalid.clone(), Class::IN, ()));
+        catalog.insert(Entry::FailedToLoad(localhost.clone(), Class::HS, ()));
+
+        let entries: HashMap<Box<Name>, &Entry<HashMapTreeZone, ()>> =
+            catalog.iter().map(|e| (e.name().to_owned(), e)).collect();
+        assert_eq!(entries.len(), 4);
+        assert!(matches!(
+            entries[&test],
+            Entry::Loaded(z, _) if z.class() == Class::IN,
+        ));
+        assert!(matches!(
+            entries[&quandary_test],
+            Entry::NotYetLoaded(_, Class::IN, _),
+        ));
+        assert!(matches!(
+            entries[&invalid],
+            Entry::FailedToLoad(_, Class::IN, _),
+        ));
+        assert!(matches!(
+            entries[&localhost],
+            Entry::FailedToLoad(_, Class::HS, _),
+        ));
     }
 }
