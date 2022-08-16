@@ -38,15 +38,15 @@ pub struct HashMapTreeCatalog<Z, M> {
 type Node<Z, M> = super::node::Node<Option<Entry<Z, M>>>;
 
 impl<Z, M> HashMapTreeCatalog<Z, M> {
-    /// Creates a new, initially empty `Catalog`.
+    /// Creates a new, initially empty `HashMapTreeCatalog`.
     pub fn new() -> Self {
         Self {
             roots_by_class: HashMap::new(),
         }
     }
 
-    /// Removes an [`Entry`] from the `Catalog`, returning the current
-    /// [`Entry`] for that name and class (if any).
+    /// Removes an [`Entry`] from the `HashMapTreeCatalog`, returning
+    /// the current [`Entry`] for that name and class (if any).
     pub fn remove(&mut self, name: &Name, class: Class) -> Option<Entry<Z, M>> {
         match self.roots_by_class.entry(class) {
             hash_map::Entry::Occupied(mut e) => {
@@ -73,8 +73,9 @@ impl<Z, M> HashMapTreeCatalog<Z, M>
 where
     Z: Zone,
 {
-    /// Adds an [`Entry`] to the `Catalog`, replacing and returning the
-    /// current [`Entry`] for that name and class (if any).
+    /// Adds an [`Entry`] to the `HashMapTreeCatalog`, replacing and
+    /// returning the current [`Entry`] for that name and class (if
+    /// any).
     pub fn insert(&mut self, entry: Entry<Z, M>) -> Option<Entry<Z, M>> {
         let root = self
             .roots_by_class

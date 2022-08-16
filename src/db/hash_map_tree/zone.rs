@@ -88,8 +88,8 @@ impl HashMapTreeZone {
     /// operation, as it is expected that caller will abort the zone
     /// load if an error occurs. This will need to change to support
     /// dynamic updates (RFC 2136), but for now, *do not* continue to
-    /// use the `Zone` if this fails: it may be in an inconsistent
-    /// state.
+    /// use the `HashMapTreeZone` if this fails: it may be in an
+    /// inconsistent state.
     pub fn add(
         &mut self,
         owner: &Name,
