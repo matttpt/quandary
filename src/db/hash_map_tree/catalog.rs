@@ -31,6 +31,7 @@ use crate::name::Name;
 ///
 /// [`HashMap`]: std::collections::HashMap
 /// [`HashMapTreeZone`]: super::super::HashMapTreeZone
+#[derive(Debug)]
 pub struct HashMapTreeCatalog<Z, M> {
     roots_by_class: HashMap<Class, Node<Z, M>>,
 }
@@ -141,6 +142,17 @@ fn remove_in_class<Z, M>(
         }
     } else {
         (None, false)
+    }
+}
+
+impl<Z, M> Clone for HashMapTreeCatalog<Z, M>
+where
+    M: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            roots_by_class: self.roots_by_class.clone(),
+        }
     }
 }
 

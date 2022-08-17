@@ -98,7 +98,7 @@ impl FusedIterator for Iter<'_> {}
 ////////////////////////////////////////////////////////////////////////
 
 /// The owned variant of [`RdataSet`].
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct RdataSetOwned {
     inner: Vec<u8>,
 }

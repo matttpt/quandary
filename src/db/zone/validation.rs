@@ -77,7 +77,7 @@ use super::{GluePolicy, IteratedRrset, LookupAddrsResult, LookupOptions, Zone};
 ////////////////////////////////////////////////////////////////////////
 
 /// Indicates a semantic error or warning found in a loaded zone.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum ValidationIssue<'a> {
     MissingApexSoa,
     TooManyApexSoas,

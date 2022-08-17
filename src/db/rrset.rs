@@ -28,7 +28,7 @@ use crate::rr::{Rdata, RdataSetOwned, Ttl, Type};
 /// This is missing the NAME and CLASS fields. It's not necessary to
 /// store these, since that data is maintained by the zone data
 /// structure itself.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Rrset {
     pub rr_type: Type,
     pub ttl: Ttl,
@@ -55,7 +55,7 @@ impl<'a> From<&'a Rrset> for IteratedRrset<'a> {
 }
 
 /// Stores all of the RRsets at a node in the DNS tree.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct RrsetList {
     rrsets: Vec<Rrset>,
 }

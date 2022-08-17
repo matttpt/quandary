@@ -241,7 +241,7 @@ pub enum LookupAllResult<'a> {
 }
 
 /// Data returned when a lookup finds the requested data.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Found<'a, R> {
     /// The data (an RRset or multiple RRsets) that were looked up.
     pub data: R,
@@ -253,7 +253,7 @@ pub struct Found<'a, R> {
 
 /// Data returned when a lookup finds a CNAME at the target domain (and
 /// other records were requested).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Cname<'a> {
     /// The CNAME RRset found at the target domain name.
     pub rrset: SingleRrset<'a>,
@@ -264,7 +264,7 @@ pub struct Cname<'a> {
 }
 
 /// Data returned when a lookup encounters a zone cut.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Referral<'a> {
     /// The domain name of the child zone, i.e., the name at which NS
     /// records were found.
@@ -276,7 +276,7 @@ pub struct Referral<'a> {
 
 /// Data returned when a single-type lookup finds the target domain
 /// name, but it does not own matching data.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct NoRecords<'a> {
     /// If this result was synthesized from a wildcard domain name, then
     /// this indicates the source of synthesis.
@@ -287,14 +287,14 @@ pub struct NoRecords<'a> {
 ///
 /// This does not include the record's owner, class or type; these will
 /// be known from context.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SingleRrset<'a> {
     pub ttl: Ttl,
     pub rdatas: Cow<'a, RdataSet>,
 }
 
 /// Address RRsets returned by [`Zone::lookup_addrs`].
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Addresses<'a> {
     pub a_rrset: Option<SingleRrset<'a>>,
     pub aaaa_rrset: Option<SingleRrset<'a>>,
@@ -304,7 +304,7 @@ pub struct Addresses<'a> {
 ///
 /// The owner and class are omitted, since they will be known from
 /// context.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct IteratedRrset<'a> {
     pub rr_type: Type,
     pub ttl: Ttl,

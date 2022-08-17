@@ -47,7 +47,7 @@ use super::super::{Error, Zone};
 ///
 /// [`HashMap`]: std::collections::HashMap
 /// [RFC 1034 § 4.3.2]: https://datatracker.ietf.org/doc/html/rfc1034#section-4.3.2
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct HashMapTreeZone {
     class: Class,
     glue_policy: GluePolicy,
@@ -56,7 +56,7 @@ pub struct HashMapTreeZone {
 
 type Node = super::node::Node<NodeData>;
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct NodeData {
     rrsets: RrsetList,
 }

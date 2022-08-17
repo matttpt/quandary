@@ -72,6 +72,7 @@ pub trait Catalog {
 /// zone has not yet been loaded or that the zone failed to load. In
 /// each case, it also includes metadata that users can attach to the
 /// zone.
+#[derive(Debug)]
 pub enum Entry<Z, M> {
     Loaded(Arc<Z>, M),
     NotYetLoaded(Box<Name>, Class, M),
@@ -103,6 +104,23 @@ where
         match self {
             Self::Loaded(_, meta) => meta,
             Self::NotYetLoaded(_, _, meta) | Self::FailedToLoad(_, _, meta) => meta,
+        }
+    }
+}
+
+impl<Z, M> Clone for Entry<Z, M>
+where
+    M: Clone,
+{
+    fn clone(&self) -> Self {
+        match self {
+            Self::Loaded(zone, meta) => Self::Loaded(zone.clone(), meta.clone()),
+            Self::NotYetLoaded(name, class, meta) => {
+                Self::NotYetLoaded(name.clone(), *class, meta.clone())
+            }
+            Self::FailedToLoad(name, class, meta) => {
+                Self::FailedToLoad(name.clone(), *class, meta.clone())
+            }
         }
     }
 }

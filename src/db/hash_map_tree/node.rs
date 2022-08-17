@@ -24,7 +24,7 @@ use crate::name::{LabelBuf, Name};
 
 /// A node in the DNS tree. This structure is generic over the type of
 /// data to store at each node.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Node<T> {
     pub name: Box<Name>,
     pub children: HashMap<LabelBuf, Node<T>>,

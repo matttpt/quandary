@@ -251,6 +251,7 @@ impl Hash for Label {
 /// let labelbuf1 = LabelBuf::from(b"com");
 /// let labelbuf2 = LabelBuf::try_from(&b"org"[..]).unwrap();
 /// ```
+#[derive(Clone)]
 pub struct LabelBuf {
     len: u8,
     data: [u8; MAX_LABEL_LEN],
