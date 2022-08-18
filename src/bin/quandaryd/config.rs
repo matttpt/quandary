@@ -29,19 +29,23 @@ use serde::{de, Deserialize};
 
 use quandary::class::Class;
 use quandary::db::zone::GluePolicy;
-use quandary::db::{HashMapTreeCatalog, HashMapTreeZone};
 use quandary::name::Name;
-use quandary::server::Server;
 use quandary::thread::{self, ThreadGroup};
 
 use crate::args::RunArgs;
+use crate::run::Server;
 
 ////////////////////////////////////////////////////////////////////////
 // CONFIGURATION LOADING                                              //
 ////////////////////////////////////////////////////////////////////////
 
 /// Loads the server configuration from the file given by `path`.
-pub fn load_from_path(path: impl AsRef<Path>) -> Result<Config> {
+///
+/// The `reloading` parameter controls how the configuration is
+/// summarized in the log: if reloading, only the zone configuration
+/// (the only thing that we support reloading) is summarized. This
+/// parameter does *not* otherwise affect processing.
+pub fn load_from_path(path: impl AsRef<Path>, reloading: bool) -> Result<Config> {
     let dir = match path.as_ref().parent() {
         Some(p) => p,
         None => return Err(anyhow!("the configuration file path has no parent")),
@@ -58,7 +62,11 @@ pub fn load_from_path(path: impl AsRef<Path>) -> Result<Config> {
         }
     }
 
-    log_config_summary(&config);
+    if reloading {
+        log_zone_summary(&config.zones);
+    } else {
+        log_config_summary(&config);
+    }
     Ok(config)
 }
 
@@ -114,17 +122,33 @@ fn log_config_summary(config: &Config) {
          Bind address: {}\n\
          I/O provider: {}\n\
          RRL:          {}\n\
-         Zones:",
+         Zones:        ",
         config.bind,
         config.io.name(),
         rrl_status,
     );
+    summarize_zones(&config.zones, &mut message);
+    debug!("{}", message);
+}
 
-    if config.zones.is_empty() {
-        message.push_str("        none to load");
+/// Summarizes only the zones in the log, if the debug log level is
+/// enabled. Used when reloading.
+fn log_zone_summary(zones: &[ZoneConfig]) {
+    if log_enabled!(Debug) {
+        let mut message = String::from("Catalog reloaded:\nZones: ");
+        summarize_zones(zones, &mut message);
+        debug!("{}", message);
+    }
+}
+
+/// Produces the zone summary for [`log_config_summary`] and
+/// [`log_zone_summary`].
+fn summarize_zones(zones: &[ZoneConfig], message: &mut String) {
+    if zones.is_empty() {
+        message.push_str("none to load");
     } else {
-        write!(message, "        {} to load", config.zones.len()).unwrap();
-        for zone_config in &config.zones {
+        write!(message, "{} to load", zones.len()).unwrap();
+        for zone_config in zones {
             write!(
                 message,
                 "\n  {}/{}",
@@ -133,8 +157,6 @@ fn log_config_summary(config: &Config) {
             .unwrap();
         }
     }
-
-    debug!("{}", message);
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -169,7 +191,7 @@ pub trait IoProvider {
     fn supports_graceful_shutdown(&self) -> bool;
     fn start(
         self: Box<Self>,
-        server: &Arc<Server<HashMapTreeCatalog<HashMapTreeZone, ()>>>,
+        server: &Arc<Server>,
         group: &Arc<ThreadGroup>,
     ) -> Result<(), thread::Error>;
 }
@@ -218,7 +240,7 @@ mod blocking_io {
 
         fn start(
             self: Box<Self>,
-            server: &Arc<Server<HashMapTreeCatalog<HashMapTreeZone, ()>>>,
+            server: &Arc<Server>,
             group: &Arc<ThreadGroup>,
         ) -> Result<(), thread::Error> {
             BlockingIoProvider::start(*self, server, group)
@@ -308,7 +330,7 @@ pub struct RrlConfig {
 ////////////////////////////////////////////////////////////////////////
 
 /// The configuration of a single zone.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ZoneConfig {
     pub name: ConfigName,
@@ -357,7 +379,7 @@ macro_rules! make_serde_wrapper {
     ($wrapper:ident, $over:ty, $description:literal) => {
         /// A macro-generated deserializable wrapper over a [`quandary`]
         /// type.
-        #[derive(Debug)]
+        #[derive(Clone, Debug)]
         pub struct $wrapper(pub $over);
 
         impl<'de> Deserialize<'de> for $wrapper {

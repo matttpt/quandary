@@ -15,29 +15,69 @@
 //! Implements zone loading.
 
 use std::fmt::Write;
+use std::fs;
+use std::io::ErrorKind;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use anyhow::{anyhow, Context, Result};
 use log::Level::Warn;
 use log::{debug, error, log_enabled, warn};
 
-use quandary::db::catalog::Entry;
 use quandary::db::zone::ValidationIssue;
-use quandary::db::{HashMapTreeCatalog, HashMapTreeZone, Zone};
+use quandary::db::{Catalog as _, HashMapTreeCatalog, HashMapTreeZone, Zone};
 use quandary::zone_file::fs::Parser;
 
 use crate::config::ZoneConfig;
+
+/// The specific [`HashMapTreeCatalog`] type that we use.
+pub type Catalog = HashMapTreeCatalog<HashMapTreeZone, Metadata>;
+
+/// The specific catalog [`Entry`](quandary::db::catalog::Entry) type
+/// that we use.
+type Entry = quandary::db::catalog::Entry<HashMapTreeZone, Metadata>;
+
+/// The zone metadata that we store in each catalog entry.
+#[derive(Clone)]
+pub struct Metadata {
+    path: PathBuf,
+    mtime: Option<SystemTime>,
+}
 
 /// The maximum number of nested `$INCLUDE` directives that we will
 /// process before raising an error.
 const MAX_INCLUDE_DEPTH: usize = 16;
 
 /// Loads the zones configured in `zones`.
-pub fn load(zones: Vec<ZoneConfig>) -> HashMapTreeCatalog<HashMapTreeZone, ()> {
-    let mut catalog = HashMapTreeCatalog::new();
+pub fn load(zones: Vec<ZoneConfig>) -> Catalog {
+    load_impl(zones, None)
+}
+
+/// Reloads the zones configured in `zones`. For each zone, if the zone
+/// is currently loaded (in the catalog `loaded`) and has not changed
+/// on disk, then the currently loaded zone will be reused.
+pub fn reload(zones: Vec<ZoneConfig>, loaded: &Catalog) -> Catalog {
+    load_impl(zones, Some(loaded))
+}
+
+/// The implementation of [`load`] and [`reload`].
+fn load_impl(zones: Vec<ZoneConfig>, loaded: Option<&Catalog>) -> Catalog {
+    let mut catalog = Catalog::new();
     let mut zones_failed = 0;
 
     for zone_config in zones {
+        // Determine whether the zone should be (re)loaded.
+        let loaded_zone = loaded.and_then(|c| c.lookup(&zone_config.name.0, zone_config.class.0));
+        let (mtime, zone_config) = match check_mtime(zone_config, loaded_zone) {
+            MtimeCheckResult::Load { mtime, zone_config } => (mtime, zone_config),
+            MtimeCheckResult::Skip { entry } => {
+                catalog.insert(entry);
+                continue;
+            }
+        };
+
+        // Load and validate the zone.
         debug!(
             "Loading {}/{} from {}.",
             zone_config.name.0,
@@ -46,7 +86,13 @@ pub fn load(zones: Vec<ZoneConfig>) -> HashMapTreeCatalog<HashMapTreeZone, ()> {
         );
         match load_and_validate_zone(&zone_config) {
             Ok(zone) => {
-                catalog.insert(Entry::Loaded(Arc::new(zone), ()));
+                catalog.insert(Entry::Loaded(
+                    Arc::new(zone),
+                    Metadata {
+                        path: zone_config.path,
+                        mtime,
+                    },
+                ));
             }
             Err(e) => {
                 let mut message = format!(
@@ -57,11 +103,7 @@ pub fn load(zones: Vec<ZoneConfig>) -> HashMapTreeCatalog<HashMapTreeZone, ()> {
                     write!(message, "\n[{}] {}", i + 1, cause).unwrap();
                 }
                 error!("{}", message);
-                catalog.insert(Entry::FailedToLoad(
-                    zone_config.name.0,
-                    zone_config.class.0,
-                    (),
-                ));
+                catalog.insert(make_error_catalog_entry(zone_config, loaded_zone));
                 zones_failed += 1;
             }
         }
@@ -76,6 +118,72 @@ pub fn load(zones: Vec<ZoneConfig>) -> HashMapTreeCatalog<HashMapTreeZone, ()> {
     }
 
     catalog
+}
+
+/// The result of [`check_mtime`], indicating whether a zone should be
+/// (re)loaded from disk.
+enum MtimeCheckResult {
+    Load {
+        mtime: Option<SystemTime>,
+        zone_config: ZoneConfig,
+    },
+    Skip {
+        entry: Entry,
+    },
+}
+
+/// Checks the modification time of a zone's file. comapring it to the
+/// time the zone was last loaded (if any). Returns what action to take
+/// (see [`MtimeCheckResult`]).
+fn check_mtime(zone_config: ZoneConfig, loaded_zone: Option<&Entry>) -> MtimeCheckResult {
+    match fs::metadata(&zone_config.path).and_then(|m| m.modified()) {
+        Ok(mtime) => match loaded_zone {
+            Some(Entry::Loaded(zone, metadata)) => {
+                if metadata.path == zone_config.path
+                    && metadata
+                        .mtime
+                        .map(|loaded_mtime| mtime <= loaded_mtime)
+                        .unwrap_or(false)
+                {
+                    debug!(
+                        "Skipping load of {}/{}: \
+                         the zone file {} has not changed since it was last loaded.",
+                        zone_config.name.0,
+                        zone_config.class.0,
+                        zone_config.path.display(),
+                    );
+                    MtimeCheckResult::Skip {
+                        entry: Entry::Loaded(zone.clone(), metadata.clone()),
+                    }
+                } else {
+                    MtimeCheckResult::Load {
+                        mtime: Some(mtime),
+                        zone_config,
+                    }
+                }
+            }
+            _ => MtimeCheckResult::Load {
+                mtime: Some(mtime),
+                zone_config,
+            },
+        },
+        Err(e) if e.kind() != ErrorKind::Unsupported => {
+            error!(
+                "Failed to get metadata for {}: {}. The zone {}/{} will not be loaded.",
+                zone_config.path.display(),
+                e,
+                zone_config.name.0,
+                zone_config.class.0,
+            );
+            MtimeCheckResult::Skip {
+                entry: make_error_catalog_entry(zone_config, loaded_zone),
+            }
+        }
+        _ => MtimeCheckResult::Load {
+            mtime: None,
+            zone_config,
+        },
+    }
 }
 
 /// Loads and validates a single zone.
@@ -182,4 +290,21 @@ fn validate_zone(zone: &HashMapTreeZone) -> Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// Makes a catalog entry for a zone that has failed to load. The
+/// currently loaded entry is used if possible; this way, currently
+/// loaded zones remain loaded (with the old data) if the new data fails
+/// to load.
+fn make_error_catalog_entry(zone_config: ZoneConfig, loaded: Option<&Entry>) -> Entry {
+    loaded.map(Entry::clone).unwrap_or_else(|| {
+        Entry::FailedToLoad(
+            zone_config.name.0,
+            zone_config.class.0,
+            Metadata {
+                path: zone_config.path,
+                mtime: None,
+            },
+        )
+    })
 }

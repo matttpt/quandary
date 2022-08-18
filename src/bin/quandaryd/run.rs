@@ -15,6 +15,7 @@
 //! Implements the `run` command (i.e., running the server).
 
 use std::fmt::Write;
+use std::path::Path;
 use std::process;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -22,17 +23,19 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use env_logger::Env;
 use log::{error, info, warn};
-use signal_hook::consts::signal::{SIGINT, SIGTERM};
+use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 
-use quandary::db::HashMapTreeCatalog;
 use quandary::io::socket::SUPPORTS_LOCAL_ADDRESS_SELECTION;
-use quandary::server::{RrlParams, Server};
+use quandary::server::RrlParams;
 use quandary::thread::ThreadGroup;
 
 use crate::args::RunArgs;
-use crate::config::{self, RrlConfig, ServerConfig};
-use crate::zones;
+use crate::config::{self, RrlConfig, ServerConfig, ZoneConfig};
+use crate::zones::{self, Catalog};
+
+/// The specific [`Server`](quandary::server::Server) type we use.
+pub type Server = quandary::server::Server<Catalog>;
 
 /// Runs the server.
 pub fn run(args: RunArgs) {
@@ -60,12 +63,17 @@ fn try_running(run_args: RunArgs) -> Result<()> {
 
     // Get the configuration, either from the file system or from the
     // command line arguments, as appropriate.
-    let config = if let Some(ref config) = run_args.config {
-        info!("Loading the configuration from {}.", config.display());
-        config::load_from_path(config).context("failed to load the configuration")?
+    let (config, zone_reload_source) = if let Some(ref config_path) = run_args.config {
+        info!("Loading the configuration from {}.", config_path.display());
+        let config = config::load_from_path(config_path, false)
+            .context("failed to load the configuration")?;
+        let zone_reload_source = ZoneReloadSource::Config(config_path.as_path());
+        (config, zone_reload_source)
     } else {
         info!("Loading the configuration from the command line.");
-        config::load_from_args(run_args)
+        let config = config::load_from_args(run_args);
+        let zone_reload_source = ZoneReloadSource::Args(config.zones.clone());
+        (config, zone_reload_source)
     };
 
     // Before we bind, warn if we don't have local address selection but
@@ -87,7 +95,7 @@ fn try_running(run_args: RunArgs) -> Result<()> {
         .io
         .bind_provider(config.bind)
         .context("failed to bind sockets")?;
-    let mut server = Server::new(Arc::new(HashMapTreeCatalog::new()));
+    let mut server = Server::new(Arc::new(Catalog::new()));
     if let Some(ref server_config) = config.server {
         configure_server(&mut server, server_config)?;
     }
@@ -98,8 +106,8 @@ fn try_running(run_args: RunArgs) -> Result<()> {
     } else {
         info!("Beginning to load {} zones.", config.zones.len());
     }
-    let catalog = zones::load(config.zones);
-    server.set_catalog(Arc::new(catalog));
+    let mut catalog = Arc::new(zones::load(config.zones));
+    server.set_catalog(catalog.clone());
 
     // Set up signal handling.
     let mut signals = set_up_signal_handling().context("failed to set up signal handling")?;
@@ -113,7 +121,7 @@ fn try_running(run_args: RunArgs) -> Result<()> {
         .start(&server, &thread_group)
         .context("failed to start the I/O provider")?;
 
-    // Wait for termination signals.
+    // Process incoming signals.
     for signal in signals.forever() {
         match signal {
             s @ (SIGINT | SIGTERM) => {
@@ -124,6 +132,19 @@ fn try_running(run_args: RunArgs) -> Result<()> {
                 };
                 info!("Received {}; shutting down.", name);
                 break;
+            }
+            SIGHUP => {
+                info!("Received SIGHUP; reloading zones.");
+                match reload_zones(&zone_reload_source, &server, &catalog) {
+                    Ok(new_catalog) => catalog = new_catalog,
+                    Err(e) => {
+                        let mut message = String::from("Failed to reload zones:");
+                        for (i, cause) in e.chain().enumerate() {
+                            write!(message, "\n[{}] {}", i + 1, cause).unwrap();
+                        }
+                        error!("{}", message);
+                    }
+                };
             }
             _ => unreachable!(),
         }
@@ -138,7 +159,7 @@ fn try_running(run_args: RunArgs) -> Result<()> {
     Ok(())
 }
 
-fn configure_server<C>(server: &mut Server<C>, config: &ServerConfig) -> Result<()> {
+fn configure_server(server: &mut Server, config: &ServerConfig) -> Result<()> {
     // Set the EDNS UDP payload size if it's configured.
     if let Some(size) = config.edns_udp_payload_size {
         server
@@ -154,7 +175,7 @@ fn configure_server<C>(server: &mut Server<C>, config: &ServerConfig) -> Result<
     Ok(())
 }
 
-fn configure_rrl<C>(server: &mut Server<C>, config: &RrlConfig) -> Result<()> {
+fn configure_rrl(server: &mut Server, config: &RrlConfig) -> Result<()> {
     let mut rrl_params = RrlParams::new(
         config.noerror_rate,
         config.nxdomain_rate,
@@ -178,6 +199,7 @@ fn configure_rrl<C>(server: &mut Server<C>, config: &RrlConfig) -> Result<()> {
 }
 
 fn set_up_signal_handling() -> Result<Signals> {
+    let all_signals = &[SIGHUP, SIGINT, SIGTERM];
     let term_signals = &[SIGINT, SIGTERM];
     let already_terminating = Arc::new(AtomicBool::new(false));
 
@@ -189,5 +211,28 @@ fn set_up_signal_handling() -> Result<Signals> {
         signal_hook::flag::register(*sig, already_terminating.clone())?;
     }
 
-    Signals::new(term_signals).map_err(|e| e.into())
+    Signals::new(all_signals).map_err(|e| e.into())
+}
+
+enum ZoneReloadSource<'a> {
+    Args(Vec<ZoneConfig>),
+    Config(&'a Path),
+}
+
+fn reload_zones(
+    zone_reload_source: &ZoneReloadSource,
+    server: &Server,
+    catalog: &Catalog,
+) -> Result<Arc<Catalog>> {
+    let zone_configs = match zone_reload_source {
+        ZoneReloadSource::Args(zone_configs) => zone_configs.clone(),
+        ZoneReloadSource::Config(path) => {
+            let config =
+                config::load_from_path(path, true).context("failed to reload the configuration")?;
+            config.zones
+        }
+    };
+    let new_catalog = Arc::new(zones::reload(zone_configs, catalog));
+    server.set_catalog(new_catalog.clone());
+    Ok(new_catalog)
 }

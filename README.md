@@ -171,6 +171,22 @@ path        = "quandary.test.zone"  # Required. Relative paths are
                                     # configuration file.
 ```
 
+### Reloading
+
+The Quandary daemon reloads its data when it receives SIGHUP. When
+configured with a configuration file, the configuration file is first
+reread to update the list of zones to serve; zones are then loaded,
+reloaded, and dropped as required. When configured from the command
+line, the configured zones are reloaded, but the list of zones to serve
+cannot be changed without a full restart.
+
+On systems that support it, Quandary checks the modification time of the
+configured zone files and does not reload them if they have not changed.
+
+Note that SIGHUP triggers only a data reload. Changes to the
+configuration file outside of the `zones` array are not applied without
+a full restart.
+
 ### Logging
 
 Logging in Quandary is based on the `log` and `env_logger` Rust crates.
