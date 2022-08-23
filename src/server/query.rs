@@ -22,7 +22,8 @@ use crate::db::catalog::{self, Catalog};
 use crate::db::zone::{
     LookupAddrsResult, LookupAllResult, LookupOptions, LookupResult, SingleRrset, Zone,
 };
-use crate::message::{writer, Qclass, Qtype, Rcode, Writer};
+use crate::message::writer::{self, Hint, HintedName};
+use crate::message::{Qclass, Qtype, Rcode, Writer};
 use crate::name::Name;
 use crate::rr::{Rdata, Ttl, Type};
 
@@ -130,7 +131,7 @@ where
             context.source_of_synthesis = found.source_of_synthesis;
             context.response.set_aa(true);
             context.response.add_answer_rrset(
-                qname,
+                HintedName::new(Hint::Qname, qname),
                 rr_type,
                 zone.class(),
                 found.data.ttl,
@@ -186,7 +187,7 @@ where
             let mut n_added = 0;
             for rrset in found.data {
                 context.response.add_answer_rrset(
-                    qname,
+                    HintedName::new(Hint::Qname, qname),
                     rrset.rr_type,
                     class,
                     rrset.ttl,
@@ -272,7 +273,7 @@ fn do_cname(
     // should be set here.
     response.set_aa(true);
     response.add_answer_rrset(
-        qname,
+        HintedName::new(Hint::Qname, qname),
         Type::CNAME,
         zone.class(),
         cname_rrset.ttl,
@@ -337,7 +338,7 @@ fn follow_cname_2(
     match zone.lookup(&cname, rr_type, LookupOptions::default()) {
         LookupResult::Found(found) => {
             response.add_answer_rrset(
-                &cname,
+                HintedName::new(Hint::None, &cname),
                 rr_type,
                 zone.class(),
                 found.data.ttl,
@@ -354,7 +355,7 @@ fn follow_cname_2(
                 Err(ProcessingError::ServFail)
             } else {
                 response.add_answer_rrset(
-                    &cname,
+                    HintedName::new(Hint::None, &cname),
                     Type::CNAME,
                     zone.class(),
                     next_cname.rrset.ttl,
@@ -410,7 +411,7 @@ fn do_referral(
     response: &mut Writer,
 ) -> ProcessingResult<()> {
     response.add_authority_rrset(
-        child_zone,
+        HintedName::new(Hint::None, child_zone),
         Type::NS,
         parent_zone.class(),
         ns_rrset.ttl,
@@ -534,7 +535,13 @@ fn add_negative_caching_soa(zone: &impl Zone, response: &mut Writer) -> Processi
         .ok_or(ProcessingError::ServFail)?;
     let ttl = Ttl::from(read_soa_minimum(soa_rdata)?);
     response
-        .add_authority_rr(zone.name(), Type::SOA, zone.class(), ttl, soa_rdata)
+        .add_authority_rr(
+            HintedName::new(Hint::None, zone.name()),
+            Type::SOA,
+            zone.class(),
+            ttl,
+            soa_rdata,
+        )
         .map_err(Into::into)
 }
 
@@ -570,18 +577,21 @@ fn add_additional_addresses(
         search_below_cuts,
     };
     if let LookupAddrsResult::Found(found) = zone.lookup_addrs(name, lookup_options) {
-        if let Some(a_rrset) = found.data.a_rrset {
+        let hint = if let Some(a_rrset) = found.data.a_rrset {
             response.add_additional_rrset(
-                name,
+                HintedName::new(Hint::None, name),
                 Type::A,
                 zone.class(),
                 a_rrset.ttl,
                 &a_rrset.rdatas,
             )?;
-        }
+            Hint::MostRecentOwner
+        } else {
+            Hint::None
+        };
         if let Some(aaaa_rrset) = found.data.aaaa_rrset {
             response.add_additional_rrset(
-                name,
+                HintedName::new(hint, name),
                 Type::AAAA,
                 zone.class(),
                 aaaa_rrset.ttl,
@@ -622,6 +632,7 @@ mod tests {
     use super::*;
     use crate::db::zone::{GluePolicy, LookupOptions};
     use crate::db::HashMapTreeZone;
+    use crate::message::Question;
 
     ////////////////////////////////////////////////////////////////////
     // CNAME-FOLLOWING TESTS                                          //
@@ -652,6 +663,16 @@ mod tests {
     fn test_cname(zone: HashMapTreeZone, owner: Box<Name>, expected_result: ProcessingResult<()>) {
         let mut buf = [0; 512];
         let mut writer = Writer::try_from(&mut buf[..]).unwrap();
+
+        // CNAME handling uses the QNAME compression hint, so make sure
+        // that there is a QNAME.
+        let question = Question {
+            qname: owner.clone(),
+            qtype: Type::CNAME.into(),
+            qclass: Class::IN.into(),
+        };
+        writer.add_question(&question).unwrap();
+
         let cname_rrset = match zone.lookup(&owner, Type::CNAME, LookupOptions::default()) {
             LookupResult::Found(found) => found.data,
             _ => panic!(),

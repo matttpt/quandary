@@ -69,6 +69,7 @@ pub struct Writer<'a> {
     ancount: u16,
     nscount: u16,
     arcount: u16,
+    most_recent_owner: Option<u16>,
     edns: Option<Edns>,
 }
 
@@ -117,6 +118,7 @@ impl<'a> Writer<'a> {
                 ancount: 0,
                 nscount: 0,
                 arcount: 0,
+                most_recent_owner: None,
                 edns: None,
             })
         }
@@ -300,7 +302,7 @@ impl<'a> Writer<'a> {
     /// RRs are added to any other section.
     pub fn add_answer_rr(
         &mut self,
-        owner: &Name,
+        owner: HintedName,
         rr_type: Type,
         class: Class,
         ttl: Ttl,
@@ -323,7 +325,7 @@ impl<'a> Writer<'a> {
     /// any other section.
     pub fn add_answer_rrset(
         &mut self,
-        owner: &Name,
+        owner: HintedName,
         rr_type: Type,
         class: Class,
         ttl: Ttl,
@@ -360,7 +362,7 @@ impl<'a> Writer<'a> {
     /// and before any additional RRs are added.
     pub fn add_authority_rr(
         &mut self,
-        owner: &Name,
+        owner: HintedName,
         rr_type: Type,
         class: Class,
         ttl: Ttl,
@@ -383,7 +385,7 @@ impl<'a> Writer<'a> {
     /// before any additional RRs are added.
     pub fn add_authority_rrset(
         &mut self,
-        owner: &Name,
+        owner: HintedName,
         rr_type: Type,
         class: Class,
         ttl: Ttl,
@@ -421,7 +423,7 @@ impl<'a> Writer<'a> {
     /// sections are added.
     pub fn add_additional_rr(
         &mut self,
-        owner: &Name,
+        owner: HintedName,
         rr_type: Type,
         class: Class,
         ttl: Ttl,
@@ -444,7 +446,7 @@ impl<'a> Writer<'a> {
     /// are added.
     pub fn add_additional_rrset(
         &mut self,
-        owner: &Name,
+        owner: HintedName,
         rr_type: Type,
         class: Class,
         ttl: Ttl,
@@ -470,13 +472,13 @@ impl<'a> Writer<'a> {
     /// [`Writer::with_rollback`].
     fn add_rr(
         &mut self,
-        owner: &Name,
+        owner: HintedName,
         rr_type: Type,
         class: Class,
         ttl: Ttl,
         rdata: &Rdata,
     ) -> Result<()> {
-        self.try_push(owner.wire_repr())?;
+        self.most_recent_owner = self.write_hinted_name(owner)?;
         self.try_push_u16(rr_type.into())?;
         self.try_push_u16(class.into())?;
         self.try_push_u32(ttl.into())?;
@@ -490,7 +492,7 @@ impl<'a> Writer<'a> {
     /// [`Writer::with_rollback`].
     fn add_rrset(
         &mut self,
-        owner: &Name,
+        mut owner: HintedName,
         rr_type: Type,
         class: Class,
         ttl: Ttl,
@@ -499,6 +501,7 @@ impl<'a> Writer<'a> {
         let mut n_added = 0;
         for rdata in rdatas.iter() {
             self.add_rr(owner, rr_type, class, ttl, rdata)?;
+            owner.hint = Hint::MostRecentOwner;
             n_added += 1;
         }
         Ok(n_added)
@@ -515,6 +518,7 @@ impl<'a> Writer<'a> {
         }
         self.cursor = self.rr_start;
         self.section = Section::Question;
+        self.most_recent_owner = None;
     }
 
     /// Makes this an EDNS message. This will reserve space at the end
@@ -550,8 +554,14 @@ impl<'a> Writer<'a> {
             let class = Class::from(edns.udp_payload_size);
             let ttl = Ttl::from((edns.extended_rcode_upper_bits as u32) << 24);
             self.available += OPT_RECORD_SIZE;
-            self.add_rr(Name::root(), Type::OPT, class, ttl, Rdata::empty())
-                .unwrap();
+            self.add_rr(
+                HintedName::new(Hint::None, Name::root()),
+                Type::OPT,
+                class,
+                ttl,
+                Rdata::empty(),
+            )
+            .unwrap();
         }
         self.write_u16(QDCOUNT_START, self.qdcount);
         self.write_u16(ANCOUNT_START, self.ancount);
@@ -561,20 +571,62 @@ impl<'a> Writer<'a> {
     }
 
     /// Executes `f(self)`, returning the result and rolling back the
-    /// section and cursor to the current values first if the result is
-    /// an error.
+    /// section, cursor, and compression state to the current values
+    /// first if the result is an error.
     fn with_rollback<F, T>(&mut self, f: F) -> Result<T>
     where
         F: FnOnce(&mut Self) -> Result<T>,
     {
         let saved_section = self.section;
         let saved_cursor = self.cursor;
+        let saved_most_recent_owner = self.most_recent_owner;
         let result = f(self);
         if result.is_err() {
             self.section = saved_section;
             self.cursor = saved_cursor;
+            self.most_recent_owner = saved_most_recent_owner;
         }
         result
+    }
+
+    /// Writes a domain name to the underlying buffer at the current
+    /// cursor, compressing it using the provided hint if possible.
+    /// On success, possibly returns a pointer an occurrence of the
+    /// name. (This may or may not be the occurrence just written.)
+    fn write_hinted_name(&mut self, hinted_name: HintedName) -> Result<Option<u16>> {
+        // Compression is not worth it if the name is no longer than a
+        // two-octet pointer.
+        if hinted_name.name.wire_repr().len() <= 2 {
+            return self.write_unhinted_name(hinted_name.name);
+        }
+
+        match hinted_name.hint {
+            Hint::Qname => {
+                if self.qdcount > 0 {
+                    self.try_push_u16(0xc00c).and(Ok(Some(0xc)))
+                } else {
+                    self.write_unhinted_name(hinted_name.name)
+                }
+            }
+            Hint::MostRecentOwner => {
+                if let Some(pointer) = self.most_recent_owner {
+                    self.try_push_u16(0xc000 | pointer).and(Ok(Some(pointer)))
+                } else {
+                    self.write_unhinted_name(hinted_name.name)
+                }
+            }
+            Hint::None => self.write_unhinted_name(hinted_name.name),
+        }
+    }
+
+    /// Writes a domain name to the underlying buffer at the current
+    /// cursor, without compression. On success, returns a pointer to
+    /// the occurrence of the name just written if the cursor was small
+    /// enough.
+    fn write_unhinted_name(&mut self, name: &Name) -> Result<Option<u16>> {
+        let pointer = (self.cursor <= POINTER_MAX).then_some(self.cursor as u16);
+        self.try_push(name.wire_repr())?;
+        Ok(pointer)
     }
 
     /// Tries to write `data` to the underlying buffer at the current
@@ -620,6 +672,58 @@ impl<'a> TryFrom<&'a mut [u8]> for Writer<'a> {
     fn try_from(octets: &'a mut [u8]) -> Result<Self> {
         Self::new(octets, octets.len())
     }
+}
+
+////////////////////////////////////////////////////////////////////////
+// HINTED NAMES                                                       //
+////////////////////////////////////////////////////////////////////////
+
+/// A domain name combined with a hint for compression in a DNS message.
+///
+/// The DNS protocol allows domain names in certain fields in messages
+/// optionally to be compressed using an ad-hoc compression scheme. To
+/// take advantage of this, the [`Writer`] API accepts a [`HintedName`]
+/// to specify the record owner when writing resource records. This
+/// structure combines a reference to a [`Name`] with a [`Hint`] that
+/// informs the [`Writer`] where the name has occurred previously in the
+/// the message.
+///
+/// When using a hint, the caller promises that the hint is correct. The
+/// [`Writer`] does check that the prior occurrence exists; for example,
+/// it will not compress using [`Hint::Qname`] if no question has been
+/// written to the message. However, it *does not* check that the prior
+/// occurrence is the same as the name provided in the `HintedName`. For
+/// instance, passing a `HintedName` with [`Hint::Qname`] and a name
+/// that is *not* the QNAME may produce incorrect results.
+///
+/// Using [`Hint::None`] will always produce correct results.
+#[derive(Clone, Copy, Debug)]
+pub struct HintedName<'a> {
+    hint: Hint,
+    name: &'a Name,
+}
+
+impl<'a> HintedName<'a> {
+    /// Creates a new `HintedName` from the provided hint and name.
+    pub const fn new(hint: Hint, name: &'a Name) -> Self {
+        Self { hint, name }
+    }
+}
+
+/// A hint for how to compress a domain name in a DNS message.
+///
+/// See [`HintedName`] for more information.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Hint {
+    /// The name is the QNAME in the (first) question of the message.
+    Qname,
+
+    /// The name is the same as the owner of the resource record most
+    /// recently added to the message.
+    MostRecentOwner,
+
+    /// No hint is provided.
+    None,
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -688,6 +792,7 @@ mod tests {
 
     lazy_static! {
         static ref NAME: Box<Name> = "quandary.test.".parse().unwrap();
+        static ref HINTED_NAME: HintedName<'static> = HintedName::new(Hint::None, &NAME);
         static ref QUESTION: Question = Question {
             qname: NAME.clone(),
             qtype: Type::A.into(),
@@ -715,7 +820,7 @@ mod tests {
         writer.set_rcode(Rcode::NOERROR);
         writer.add_question(&QUESTION).unwrap();
         writer
-            .add_answer_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
         let len = writer.finish();
         assert_eq!(
@@ -773,19 +878,19 @@ mod tests {
 
     fn rr_count_overflow_test_impl<'a>(
         buf: &'a mut [u8],
-        add_rr: fn(&mut Writer<'a>, &Name, Type, Class, Ttl, &Rdata) -> Result<()>,
-        add_rrset: fn(&mut Writer<'a>, &Name, Type, Class, Ttl, &RdataSet) -> Result<()>,
+        add_rr: fn(&mut Writer<'a>, HintedName, Type, Class, Ttl, &Rdata) -> Result<()>,
+        add_rrset: fn(&mut Writer<'a>, HintedName, Type, Class, Ttl, &RdataSet) -> Result<()>,
     ) {
         let mut writer = Writer::try_from(buf).unwrap();
         for _ in 0..u16::MAX {
-            add_rrset(&mut writer, &NAME, TYPE, CLASS, *TTL, &RDATAS).unwrap();
+            add_rrset(&mut writer, *HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS).unwrap();
         }
         assert_eq!(
-            add_rr(&mut writer, &NAME, TYPE, CLASS, *TTL, *RDATA),
+            add_rr(&mut writer, *HINTED_NAME, TYPE, CLASS, *TTL, *RDATA),
             Err(Error::CountOverflow),
         );
         assert_eq!(
-            add_rrset(&mut writer, &NAME, TYPE, CLASS, *TTL, &RDATAS),
+            add_rrset(&mut writer, *HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS),
             Err(Error::CountOverflow),
         );
     }
@@ -803,19 +908,19 @@ mod tests {
 
         // Check Answer -> Question.
         writer
-            .add_answer_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
         assert_eq!(writer.add_question(&QUESTION), Err(Error::OutOfOrder));
 
         // Check Authority -> Question.
         writer
-            .add_additional_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
         assert_eq!(writer.add_question(&QUESTION), Err(Error::OutOfOrder));
 
         // Check Additional -> Question.
         writer
-            .add_additional_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
         assert_eq!(writer.add_question(&QUESTION), Err(Error::OutOfOrder));
     }
@@ -827,36 +932,36 @@ mod tests {
 
         // Check empty (Question) -> Answer.
         writer
-            .add_answer_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
 
         // Check Answer -> Answer.
         writer
-            .add_answer_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
 
         // Check Question -> Answer.
         writer.clear_rrs();
         writer.add_question(&QUESTION).unwrap();
         writer
-            .add_answer_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
 
         // Check Authority -> Answer.
         writer
-            .add_authority_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
         assert_eq!(
-            writer.add_answer_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS),
+            writer.add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS),
             Err(Error::OutOfOrder),
         );
 
         // Check Additional -> Answer.
         writer
-            .add_additional_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
         assert_eq!(
-            writer.add_answer_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS),
+            writer.add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS),
             Err(Error::OutOfOrder),
         );
     }
@@ -868,37 +973,37 @@ mod tests {
 
         // Check empty (Question) -> Authority.
         writer
-            .add_authority_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
 
         // Check Authority -> Authority.
         writer
-            .add_authority_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
 
         // Check Question -> Authority.
         writer.clear_rrs();
         writer.add_question(&QUESTION).unwrap();
         writer
-            .add_authority_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
 
         // Check Answer -> Authority.
         writer.clear_rrs();
         writer
-            .add_answer_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
         writer
-            .add_authority_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
 
         // Check Additional -> Authority.
         writer.clear_rrs();
         writer
-            .add_additional_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
         assert_eq!(
-            writer.add_authority_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS),
+            writer.add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS),
             Err(Error::OutOfOrder),
         );
     }
@@ -910,37 +1015,37 @@ mod tests {
 
         // Check empty (Question) -> Additional.
         writer
-            .add_additional_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
 
         // Check Additional -> Additional.
         writer
-            .add_additional_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
 
         // Check Question -> Additional.
         writer.clear_rrs();
         writer.add_question(&QUESTION).unwrap();
         writer
-            .add_additional_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
 
         // Check Answer -> Additional.
         writer.clear_rrs();
         writer
-            .add_answer_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
         writer
-            .add_additional_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
 
         // Check Authority -> Additional.
         writer.clear_rrs();
         writer
-            .add_authority_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
         writer
-            .add_additional_rrset(&NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
             .unwrap();
     }
 
@@ -1041,6 +1146,47 @@ mod tests {
         assert_eq!(
             writer.set_extended_rcode(4096.into()),
             Err(Error::ExtendedRcodeOverflow),
+        );
+    }
+
+    #[test]
+    fn qname_hint_works() {
+        let mut buf = [0; 512];
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        writer.add_question(&QUESTION).unwrap();
+        let hinted_for_qname = HintedName::new(Hint::Qname, NAME.as_ref());
+        writer
+            .add_answer_rrset(hinted_for_qname, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
+        let len = writer.finish();
+        assert_eq!(
+            &buf[0..len],
+            b"\x00\x00\x00\x00\x00\x01\x00\x01\x00\x00\x00\x00\
+              \x08quandary\x04test\x00\x00\x01\x00\x01\
+              \xc0\x0c\x00\x01\x00\x01\x00\x00\x0e\x10\x00\x04\
+              \x7f\x00\x00\x01",
+        );
+    }
+
+    #[test]
+    fn most_recent_owner_hint_works() {
+        let mut buf = [0; 512];
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        writer
+            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
+        let hinted_for_mro = HintedName::new(Hint::MostRecentOwner, NAME.as_ref());
+        writer
+            .add_additional_rrset(hinted_for_mro, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
+        let len = writer.finish();
+        assert_eq!(
+            &buf[0..len],
+            b"\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01\
+              \x08quandary\x04test\x00\x00\x01\x00\x01\x00\x00\x0e\x10\x00\x04\
+              \x7f\x00\x00\x01\
+              \xc0\x0c\x00\x01\x00\x01\x00\x00\x0e\x10\x00\x04\
+              \x7f\x00\x00\x01",
         );
     }
 }

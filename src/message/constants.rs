@@ -40,3 +40,4 @@ pub const NSCOUNT_START: usize = 8;
 pub const NSCOUNT_END: usize = 10;
 pub const ARCOUNT_START: usize = 10;
 pub const ARCOUNT_END: usize = 12;
+pub const POINTER_MAX: usize = 16383;
