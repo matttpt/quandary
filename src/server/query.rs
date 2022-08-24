@@ -299,7 +299,7 @@ fn follow_cname_1(
             Err(ProcessingError::ServFail)
         } else {
             let hinted_owner = match owners_seen.last() {
-                Some(owner) => HintedName::new(Hint::None, owner),
+                Some(owner) => HintedName::new(Hint::MostRecentRdata, owner),
                 None => HintedName::new(Hint::Qname, qname),
             };
             response.add_answer_rr(
@@ -343,7 +343,7 @@ fn follow_cname_2(
     match zone.lookup(&cname, rr_type, LookupOptions::default()) {
         LookupResult::Found(found) => {
             response.add_answer_rrset(
-                HintedName::new(Hint::None, &cname),
+                HintedName::new(Hint::MostRecentRdata, &cname),
                 rr_type,
                 zone.class(),
                 found.data.ttl,

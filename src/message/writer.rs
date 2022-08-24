@@ -70,6 +70,7 @@ pub struct Writer<'a> {
     nscount: u16,
     arcount: u16,
     most_recent_owner: Option<u16>,
+    most_recent_rdata: Option<u16>,
     edns: Option<Edns>,
 }
 
@@ -119,6 +120,7 @@ impl<'a> Writer<'a> {
                 nscount: 0,
                 arcount: 0,
                 most_recent_owner: None,
+                most_recent_rdata: None,
                 edns: None,
             })
         }
@@ -483,6 +485,7 @@ impl<'a> Writer<'a> {
         self.try_push_u16(class.into())?;
         self.try_push_u32(ttl.into())?;
         self.try_push_u16(rdata.len() as u16)?;
+        self.most_recent_rdata = (self.cursor <= POINTER_MAX).then_some(self.cursor as u16);
         self.try_push(rdata.octets())
     }
 
@@ -519,6 +522,7 @@ impl<'a> Writer<'a> {
         self.cursor = self.rr_start;
         self.section = Section::Question;
         self.most_recent_owner = None;
+        self.most_recent_rdata = None;
     }
 
     /// Makes this an EDNS message. This will reserve space at the end
@@ -580,11 +584,13 @@ impl<'a> Writer<'a> {
         let saved_section = self.section;
         let saved_cursor = self.cursor;
         let saved_most_recent_owner = self.most_recent_owner;
+        let saved_most_recent_rdata = self.most_recent_rdata;
         let result = f(self);
         if result.is_err() {
             self.section = saved_section;
             self.cursor = saved_cursor;
             self.most_recent_owner = saved_most_recent_owner;
+            self.most_recent_rdata = saved_most_recent_rdata;
         }
         result
     }
@@ -610,6 +616,13 @@ impl<'a> Writer<'a> {
             }
             Hint::MostRecentOwner => {
                 if let Some(pointer) = self.most_recent_owner {
+                    self.try_push_u16(0xc000 | pointer).and(Ok(Some(pointer)))
+                } else {
+                    self.write_unhinted_name(hinted_name.name)
+                }
+            }
+            Hint::MostRecentRdata => {
+                if let Some(pointer) = self.most_recent_rdata {
                     self.try_push_u16(0xc000 | pointer).and(Ok(Some(pointer)))
                 } else {
                     self.write_unhinted_name(hinted_name.name)
@@ -721,6 +734,10 @@ pub enum Hint {
     /// The name is the same as the owner of the resource record most
     /// recently added to the message.
     MostRecentOwner,
+
+    /// The name appears at the beginning of the RDATA of the resource
+    /// record most recently added to the message.
+    MostRecentRdata,
 
     /// No hint is provided.
     None,
@@ -1186,6 +1203,30 @@ mod tests {
               \x08quandary\x04test\x00\x00\x01\x00\x01\x00\x00\x0e\x10\x00\x04\
               \x7f\x00\x00\x01\
               \xc0\x0c\x00\x01\x00\x01\x00\x00\x0e\x10\x00\x04\
+              \x7f\x00\x00\x01",
+        );
+    }
+
+    #[test]
+    fn most_recent_rdata_hint_works() {
+        let mut buf = [0; 512];
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        let cname: Box<Name> = "canonical.test.".parse().unwrap();
+        let cname_rdata = cname.wire_repr().try_into().unwrap();
+        writer
+            .add_answer_rr(*HINTED_NAME, Type::CNAME, CLASS, *TTL, cname_rdata)
+            .unwrap();
+        let hinted_for_mrr = HintedName::new(Hint::MostRecentRdata, &cname);
+        writer
+            .add_answer_rrset(hinted_for_mrr, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
+        let len = writer.finish();
+        assert_eq!(
+            &buf[0..len],
+            b"\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\
+              \x08quandary\x04test\x00\x00\x05\x00\x01\x00\x00\x0e\x10\x00\x10\
+              \x09canonical\x04test\x00\
+              \xc0\x25\x00\x01\x00\x01\x00\x00\x0e\x10\x00\x04\
               \x7f\x00\x00\x01",
         );
     }
