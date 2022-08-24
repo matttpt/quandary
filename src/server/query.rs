@@ -272,19 +272,13 @@ fn do_cname(
     // the first owner name in the answer section. Thus, the AA bit
     // should be set here.
     response.set_aa(true);
-    response.add_answer_rrset(
-        HintedName::new(Hint::Qname, qname),
-        Type::CNAME,
-        zone.class(),
-        cname_rrset.ttl,
-        &cname_rrset.rdatas,
-    )?;
     follow_cname_1(zone, qname, cname_rrset, rr_type, response, ArrayVec::new())
 }
 
 /// Step 1 of the CNAME-following process. This includes parsing a
-/// `Box<Name>` from the CNAME RRset and checking that the CNAME has not
-/// already been looked up while processing the current chain.
+/// `Box<Name>` from the CNAME RR, checking that the CNAME has not
+/// already been looked up while processing the current chain, and
+/// writing the RR to the message.
 fn follow_cname_1(
     zone: &impl Zone,
     qname: &Name,
@@ -304,6 +298,17 @@ fn follow_cname_1(
             // The CNAME chain contains a loop.
             Err(ProcessingError::ServFail)
         } else {
+            let hinted_owner = match owners_seen.last() {
+                Some(owner) => HintedName::new(Hint::None, owner),
+                None => HintedName::new(Hint::Qname, qname),
+            };
+            response.add_answer_rr(
+                hinted_owner,
+                Type::CNAME,
+                zone.class(),
+                cname_rrset.ttl,
+                cname.wire_repr().try_into().unwrap(),
+            )?;
             follow_cname_2(zone, qname, cname, rr_type, response, owners_seen)
         }
     } else {
@@ -351,17 +356,7 @@ fn follow_cname_2(
             // too long, we refuse to go any further; otherwise we
             // restart the CNAME-following process with the next CNAME
             // in the chain.
-            if owners_seen.is_full() {
-                Err(ProcessingError::ServFail)
-            } else {
-                response.add_answer_rrset(
-                    HintedName::new(Hint::None, &cname),
-                    Type::CNAME,
-                    zone.class(),
-                    next_cname.rrset.ttl,
-                    &next_cname.rrset.rdatas,
-                )?;
-                owners_seen.push(cname);
+            if owners_seen.try_push(cname).is_ok() {
                 follow_cname_1(
                     zone,
                     qname,
@@ -370,6 +365,8 @@ fn follow_cname_2(
                     response,
                     owners_seen,
                 )
+            } else {
+                Err(ProcessingError::ServFail)
             }
         }
         LookupResult::Referral(referral) => {
