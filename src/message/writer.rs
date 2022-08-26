@@ -71,6 +71,7 @@ pub struct Writer<'a> {
     arcount: u16,
     most_recent_owner: Option<u16>,
     most_recent_rdata: Option<u16>,
+    compression: bool,
     edns: Option<Edns>,
 }
 
@@ -121,6 +122,7 @@ impl<'a> Writer<'a> {
                 arcount: 0,
                 most_recent_owner: None,
                 most_recent_rdata: None,
+                compression: true,
                 edns: None,
             })
         }
@@ -138,6 +140,15 @@ impl<'a> Writer<'a> {
             self.limit = new_limit;
             self.available += increase;
         }
+    }
+
+    /// Configures whether the `Writer` may (when allowed by the DNS
+    /// standard) compress domain names in the message.
+    ///
+    /// Compression is enabled by default. Changing this setting does
+    /// not affect domain names already written.
+    pub fn set_compression(&mut self, enabled: bool) {
+        self.compression = enabled;
     }
 
     /// Returns the current 16-bit ID of the message.
@@ -602,7 +613,7 @@ impl<'a> Writer<'a> {
     fn write_hinted_name(&mut self, hinted_name: HintedName) -> Result<Option<u16>> {
         // Compression is not worth it if the name is no longer than a
         // two-octet pointer.
-        if hinted_name.name.wire_repr().len() <= 2 {
+        if !self.compression || hinted_name.name.wire_repr().len() <= 2 {
             return self.write_unhinted_name(hinted_name.name);
         }
 
@@ -1227,6 +1238,26 @@ mod tests {
               \x08quandary\x04test\x00\x00\x05\x00\x01\x00\x00\x0e\x10\x00\x10\
               \x09canonical\x04test\x00\
               \xc0\x25\x00\x01\x00\x01\x00\x00\x0e\x10\x00\x04\
+              \x7f\x00\x00\x01",
+        );
+    }
+
+    #[test]
+    fn compression_can_be_disabled() {
+        let mut buf = [0; 512];
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        writer.set_compression(false);
+        writer.add_question(&QUESTION).unwrap();
+        let hinted_for_qname = HintedName::new(Hint::Qname, NAME.as_ref());
+        writer
+            .add_answer_rrset(hinted_for_qname, TYPE, CLASS, *TTL, &RDATAS)
+            .unwrap();
+        let len = writer.finish();
+        assert_eq!(
+            &buf[0..len],
+            b"\x00\x00\x00\x00\x00\x01\x00\x01\x00\x00\x00\x00\
+              \x08quandary\x04test\x00\x00\x01\x00\x01\
+              \x08quandary\x04test\x00\x00\x01\x00\x01\x00\x00\x0e\x10\x00\x04\
               \x7f\x00\x00\x01",
         );
     }
