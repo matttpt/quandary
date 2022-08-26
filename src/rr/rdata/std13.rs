@@ -18,7 +18,6 @@
 //! [RFC 1034]: https://datatracker.ietf.org/doc/html/rfc1034
 //! [RFC 1035]: https://datatracker.ietf.org/doc/html/rfc1035
 
-use std::borrow::Borrow;
 use std::fmt;
 use std::iter;
 use std::net::Ipv4Addr;
@@ -83,8 +82,8 @@ impl<'a, const N: usize> TryFrom<&'a [u8; N]> for &'a CharacterString {
     }
 }
 
-impl Borrow<[u8]> for CharacterString {
-    fn borrow(&self) -> &[u8] {
+impl AsRef<[u8]> for CharacterString {
+    fn as_ref(&self) -> &[u8] {
         &self.octets
     }
 }

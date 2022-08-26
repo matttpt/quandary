@@ -14,7 +14,6 @@
 
 //! Parsing of resource records.
 
-use std::borrow::Borrow;
 use std::io::Read;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -265,7 +264,9 @@ impl<S: Read> Parser<S> {
     /// Parses RDATA for records consisting of a single domain name.
     fn parse_name_rdata(&mut self) -> Result<Box<Rdata>> {
         if self.check_backslash_hash(ErrorKind::ExpectedNameOrBh)? {
-            self.parse_unknown_rdata_with_validation(Name::validate_uncompressed_all)
+            self.parse_unknown_rdata_with_validation(|rdata| {
+                Name::validate_uncompressed_all(rdata.octets())
+            })
         } else {
             let name = self.parse_name()?;
             self.reader.expect_eol()?;
@@ -448,17 +449,12 @@ impl<S: Read> Parser<S> {
     /// additionally validated with `validator` once it is parsed. If
     /// validation fails, an error of kind
     /// [`ErrorKind::InvalidRdataForType`] is returned.
-    fn parse_unknown_rdata_with_validation<V, T, R, E>(
-        &mut self,
-        validator: V,
-    ) -> Result<Box<Rdata>>
+    fn parse_unknown_rdata_with_validation<V, R, E>(&mut self, validator: V) -> Result<Box<Rdata>>
     where
-        V: FnOnce(&T) -> std::result::Result<R, E>,
-        T: ?Sized,
-        Rdata: Borrow<T>,
+        V: FnOnce(&Rdata) -> std::result::Result<R, E>,
     {
         let (hex_digits_position, rdata) = self.parse_unknown_rdata_impl()?;
-        if validator(rdata.as_ref().borrow()).is_ok() {
+        if validator(rdata.as_ref()).is_ok() {
             Ok(rdata)
         } else {
             Err(Error::new(
