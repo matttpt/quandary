@@ -82,12 +82,10 @@ impl RrsetList {
                 }
             }
             Err(index) => {
-                let mut rdatas = RdataSetOwned::new();
-                rdatas.insert(rr_type, rdata);
                 let rrset = Rrset {
                     rr_type,
                     ttl,
-                    rdatas,
+                    rdatas: rdata.into(),
                 };
                 self.rrsets.insert(index, rrset);
                 Ok(())

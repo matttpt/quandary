@@ -828,11 +828,7 @@ mod tests {
         };
         static ref TTL: Ttl = Ttl::from(3600);
         static ref RDATA: &'static Rdata = b"\x7f\x00\x00\x01".try_into().unwrap();
-        static ref RDATAS: RdataSetOwned = {
-            let mut rdatas = RdataSetOwned::new();
-            rdatas.insert(TYPE, *RDATA);
-            rdatas
-        };
+        static ref RDATAS: RdataSetOwned = (*RDATA).into();
     }
 
     #[test]

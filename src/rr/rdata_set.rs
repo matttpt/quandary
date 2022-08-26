@@ -32,7 +32,8 @@ use super::{Rdata, Type};
 /// reside in the same cache line.
 ///
 /// The `RdataSet` structure is the borrowed view of stored RDATA and
-/// can only be produced from the owned variant, [`RdataSetOwned`].
+/// can only be produced from the owned variant, [`RdataSetOwned`]. It
+/// is guaranteed not to be empty.
 #[repr(transparent)]
 pub struct RdataSet {
     inner: [u8],
@@ -98,20 +99,35 @@ impl FusedIterator for Iter<'_> {}
 ////////////////////////////////////////////////////////////////////////
 
 /// The owned variant of [`RdataSet`].
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct RdataSetOwned {
     inner: Vec<u8>,
 }
 
 impl RdataSetOwned {
-    /// Creates a new set initially containing no [`Rdata`].
-    pub fn new() -> Self {
-        Self::default()
+    /// Constructs an `RdataSetOwned` from an iterator. Each [`Rdata`]
+    /// is compared to the previously added [`Rdata`] as if it were of
+    /// the provided type and is not inserted if identical [`Rdata`] is
+    /// already present. Since an `RdataSetOwned` cannot be empty,
+    /// `None` is returned if the iterator produces no values.
+    ///
+    /// To produce an `RdataSetOwned` from a single [`Rdata`], prefer
+    /// [`RdataSetOwned::from`].
+    pub fn from_iter<'a, I>(rr_type: Type, rdatas: I) -> Option<Self>
+    where
+        I: IntoIterator<Item = &'a Rdata>,
+    {
+        let mut rdataset = None;
+        for rdata in rdatas.into_iter() {
+            let rdataset = rdataset.get_or_insert(Self { inner: Vec::new() });
+            rdataset.insert(rr_type, rdata);
+        }
+        rdataset
     }
 
-    /// Copies an [`Rdata`] into this [`RdataSetOwned`]. The new
-    /// [`Rdata`] is compared to the existing [`Rdata`] as if it were of
-    /// the provided type and is not inserted if identical [`Rdata`] is
+    /// Copies an [`Rdata`] into this `RdataSetOwned`. The new [`Rdata`]
+    /// is compared to the existing [`Rdata`] as if it were of the
+    /// provided type and is not inserted if identical [`Rdata`] is
     /// already present. Returns whether the [`Rdata`] was inserted.
     pub fn insert(&mut self, rr_type: Type, rdata: &Rdata) -> bool {
         for existing_rdata in self.iter() {
@@ -124,6 +140,15 @@ impl RdataSetOwned {
             .extend_from_slice(&(rdata.len() as u16).to_ne_bytes());
         self.inner.extend_from_slice(rdata.octets());
         true
+    }
+}
+
+impl From<&'_ Rdata> for RdataSetOwned {
+    fn from(rdata: &Rdata) -> Self {
+        let mut inner = Vec::with_capacity(2 + rdata.len());
+        inner.extend_from_slice(&(rdata.len() as u16).to_ne_bytes());
+        inner.extend_from_slice(rdata.octets());
+        Self { inner }
     }
 }
 
@@ -165,9 +190,7 @@ mod tests {
     fn rdata_set_owned_works() {
         let loopback1: &Rdata = (&[127, 0, 0, 1]).try_into().unwrap();
         let loopback2: &Rdata = (&[127, 0, 0, 2]).try_into().unwrap();
-        let mut rdatas = RdataSetOwned::new();
-        rdatas.insert(Type::A, loopback1);
-        rdatas.insert(Type::A, loopback2);
+        let rdatas = RdataSetOwned::from_iter(Type::A, [loopback1, loopback2]).unwrap();
         assert_eq!(
             rdatas.iter().map(Rdata::octets).collect::<Vec<_>>(),
             [loopback1.octets(), loopback2.octets()],
@@ -175,19 +198,12 @@ mod tests {
     }
 
     #[test]
-    fn rdata_set_owned_insert_ignores_duplicates() {
+    fn rdata_set_owned_eliminates_duplicates() {
         let rdata1: &Rdata = (&[2, 0, b'a', 0]).try_into().unwrap();
         let rdata2: &Rdata = (&[2, 0, b'A', 0]).try_into().unwrap();
 
-        let insert_rdatas = |rr_type, rdatas: &mut RdataSetOwned| {
-            rdatas.insert(rr_type, rdata1);
-            rdatas.insert(rr_type, rdata2);
-            rdatas.insert(rr_type, rdata1);
-        };
-
         // For e.g. A records, bitwise comparison should always be used.
-        let mut a_rdatas = RdataSetOwned::new();
-        insert_rdatas(Type::A, &mut a_rdatas);
+        let a_rdatas = RdataSetOwned::from_iter(Type::A, [rdata1, rdata2, rdata1]).unwrap();
         assert_eq!(
             a_rdatas.iter().map(Rdata::octets).collect::<Vec<_>>(),
             [rdata1.octets(), rdata2.octets()],
@@ -196,8 +212,7 @@ mod tests {
         // But for RR types embedding domain names *preceding* RFC 3597,
         // case-insensitive name comparison needs to be used. (See the
         // cmp module for details.)
-        let mut cname_rdatas = RdataSetOwned::new();
-        insert_rdatas(Type::CNAME, &mut cname_rdatas);
+        let cname_rdatas = RdataSetOwned::from_iter(Type::CNAME, [rdata1, rdata2, rdata1]).unwrap();
         assert_eq!(
             cname_rdatas.iter().map(Rdata::octets).collect::<Vec<_>>(),
             [rdata1.octets()],
