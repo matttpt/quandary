@@ -20,6 +20,7 @@ use std::io;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use log::Level::Debug;
@@ -258,6 +259,8 @@ mod blocking_io {
         tcp_listeners: usize,
         #[serde(default = "default_tcp_base_workers")]
         tcp_base_workers: usize,
+        #[serde(default = "default_tcp_worker_linger")]
+        tcp_worker_linger: u64,
         #[serde(default = "default_udp_workers")]
         udp_workers: usize,
     }
@@ -270,6 +273,10 @@ mod blocking_io {
         4
     }
 
+    fn default_tcp_worker_linger() -> u64 {
+        15
+    }
+
     fn default_udp_workers() -> usize {
         2
     }
@@ -279,6 +286,7 @@ mod blocking_io {
             Self {
                 tcp_listeners: default_listeners(),
                 tcp_base_workers: default_tcp_base_workers(),
+                tcp_worker_linger: default_tcp_worker_linger(),
                 udp_workers: default_udp_workers(),
             }
         }
@@ -289,6 +297,7 @@ mod blocking_io {
             Self {
                 tcp_listeners: toml_config.tcp_listeners,
                 tcp_base_workers: toml_config.tcp_base_workers,
+                tcp_worker_linger: Duration::from_secs(toml_config.tcp_worker_linger),
                 udp_workers: toml_config.udp_workers,
             }
         }

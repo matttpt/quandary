@@ -73,6 +73,10 @@ pub struct BlockingIoConfig {
     /// thread will be spawned for each additional connection.
     pub tcp_base_workers: usize,
 
+    /// How long auxiliary TCP worker threads will linger waiting for a
+    /// new connection to serve before exiting.
+    pub tcp_worker_linger: Duration,
+
     /// The number of UDP worker threads to run.
     pub udp_workers: usize,
 }
@@ -122,7 +126,11 @@ impl BlockingIoProvider {
         let tcp_listener = Arc::new(self.tcp_listener);
 
         // Start the TCP threads.
-        let tcp_workers = group.start_pool(Some("tcp".to_owned()), self.config.tcp_base_workers)?;
+        let tcp_workers = group.start_pool(
+            Some("tcp".to_owned()),
+            self.config.tcp_base_workers,
+            self.config.tcp_worker_linger,
+        )?;
         for i in 0..self.config.tcp_listeners {
             let name = format!("tcp listener {}", i);
             let tcp_workers = tcp_workers.clone();

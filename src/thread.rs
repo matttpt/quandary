@@ -335,16 +335,22 @@ fn end_thread(records: &mut MutexGuard<GroupRecords>, shutdown_wakeup: &Condvar)
 ////////////////////////////////////////////////////////////////////////
 
 /// A thread pool that provides a fixed number of permanent worker
-/// threads on which to execute tasks.
+/// threads, and optionally temporary auxiliary worker threads, on which
+/// to execute tasks.
 ///
 /// A `ThreadPool` is always created within a [`ThreadGroup`] through
 /// [`ThreadGroup::start_pool`].
 ///
 /// Queueing an arbitrary number of tasks is not supported. There are
 /// thus two ways of submitting tasks to the pool, depending on whether
-/// it is preferable to block until a permanent worker is available
+/// it is preferable to block until a worker is available
 /// ([`ThreadPool::submit`]) or to start an auxiliary worker thread
 /// ([`ThreadPool::submit_or_spawn`]).
+///
+/// Auxiliary worker threads may exit immediately after finishing their
+/// task, or they may "linger" and wait (until a configured timeout
+/// expires) for more tasks to become available. Lingering is enabled by
+/// configuring a non-zero timeout when the pool is created.
 ///
 /// A `ThreadPool` is shut down if its parent [`ThreadGroup`] is shut
 /// down. Furthermore, it may be independently shut down through
@@ -355,6 +361,7 @@ pub struct ThreadPool {
     key: usize,
     name: String,
     records: Mutex<PoolRecords>,
+    linger_timeout: Duration,
 
     /// Allows permanent worker threads to wait for new tasks. Used with
     /// the `records` mutex.
@@ -379,6 +386,7 @@ impl ThreadGroup {
         self: &Arc<Self>,
         name: Option<String>,
         permanent_workers: usize,
+        linger_timeout: Duration,
     ) -> Result<Arc<ThreadPool>, Error> {
         let mut records = self.records.lock().unwrap();
         if records.shutting_down {
@@ -391,6 +399,7 @@ impl ThreadGroup {
             group: self.clone(),
             key: entry.key(),
             name,
+            linger_timeout,
             records: Mutex::new(PoolRecords {
                 queue: VecDeque::with_capacity(permanent_workers),
                 available_workers: 0,
@@ -414,8 +423,8 @@ impl ThreadGroup {
 }
 
 impl ThreadPool {
-    /// Submits a task. If no permanent worker thread is available to
-    /// run it, this will block until one becomes available.
+    /// Submits a task. If no worker thread is available to run it, this
+    /// will block until one becomes available.
     pub fn submit<F>(self: &Arc<Self>, task: F) -> Result<(), Error>
     where
         F: FnOnce() + Send + 'static,
@@ -436,8 +445,7 @@ impl ThreadPool {
 
     /// Submits a task. If no permanent worker thread is available to
     /// run it, then an auxiliary worker thread will be spawned to run
-    /// it. The auxiliary worker terminates after the completion of the
-    /// task.
+    /// it.
     pub fn submit_or_spawn<F>(self: &Arc<Self>, task: F) -> Result<(), Error>
     where
         F: FnOnce() + Send + 'static,
@@ -451,12 +459,23 @@ impl ThreadPool {
             Ok(())
         } else {
             // No pooled worker is available, so we create a one-shot
-            // auxiliary worker thread to run this task.
+            // auxiliary worker thread to run this task. If auxiliary
+            // worker lingering is turned on, then it will then wait for
+            // other tasks to run (with the configured timeout).
             let id = records.next_auxiliary_id;
             records.next_auxiliary_id += 1;
             drop(records);
             let name = format!("{} auxiliary worker {}", self.name, id);
-            self.group.start_oneshot(Some(name), task)
+            if self.linger_timeout.is_zero() {
+                self.group.start_oneshot(Some(name), task)
+            } else {
+                let pool = self.clone();
+                let linger_timeout = self.linger_timeout;
+                self.group.start_oneshot(Some(name), move || {
+                    task();
+                    pool_worker_loop(pool, Some(linger_timeout));
+                })
+            }
         }
     }
 
@@ -498,16 +517,23 @@ fn start_pool_workers(
     for i in 0..permanent_workers {
         let pool = pool.clone();
         let name = format!("{} worker {}", base_name, i);
-        let task = move || pool_worker_loop(pool.clone());
+        let task = move || pool_worker_loop(pool.clone(), None);
         start_respawnable(group.clone(), group_records, Some(name), Arc::new(task))?;
     }
     Ok(())
 }
 
 /// The get task/run task loop for [`ThreadPool`] permanent worker
-/// threads.
-fn pool_worker_loop(pool: Arc<ThreadPool>) {
+/// threads and, when lingering is enabled, auxiliary worker threads
+/// after they have completed the task for which they were originally
+/// spawned.
+///
+/// `timeout` specifies how long to wait for a task to become available
+/// before returning. If `None` (as for a permanent worker thread), then
+/// this will wait forever.
+fn pool_worker_loop(pool: Arc<ThreadPool>, timeout: Option<Duration>) {
     loop {
+        let deadline = timeout.map(|t| Instant::now() + t);
         let mut records = pool.records.lock().unwrap();
         records.available_workers += 1;
         pool.available_wakeup.notify_one();
@@ -517,7 +543,28 @@ fn pool_worker_loop(pool: Arc<ThreadPool>) {
             } else if records.shutting_down {
                 return;
             }
-            records = pool.task_wakeup.wait(records).unwrap();
+            records = if let Some(deadline) = deadline {
+                let time_to_deadline = match deadline.checked_duration_since(Instant::now()) {
+                    Some(t) => t,
+                    None => {
+                        // The deadline has already passed.
+                        records.available_workers -= 1;
+                        return;
+                    }
+                };
+                let (mut records, wait_result) = pool
+                    .task_wakeup
+                    .wait_timeout(records, time_to_deadline)
+                    .unwrap();
+                if wait_result.timed_out() {
+                    records.available_workers -= 1;
+                    return;
+                } else {
+                    records
+                }
+            } else {
+                pool.task_wakeup.wait(records).unwrap()
+            };
         }
         let task = records.queue.pop_front().unwrap();
         records.available_workers -= 1;
@@ -635,7 +682,7 @@ mod tests {
     fn thread_pool_works() {
         let tasks_completed = Arc::new(Mutex::new(0));
         let group = ThreadGroup::new();
-        let pool = group.start_pool(None, 2).unwrap();
+        let pool = group.start_pool(None, 2, Duration::ZERO).unwrap();
         for _ in 0..8 {
             let tasks_completed = tasks_completed.clone();
             pool.submit(move || {
@@ -652,7 +699,7 @@ mod tests {
     #[test]
     fn thread_pool_rejects_new_tasks_after_shutdown() {
         let group = ThreadGroup::new();
-        let pool = group.start_pool(None, 0).unwrap();
+        let pool = group.start_pool(None, 0, Duration::ZERO).unwrap();
         pool.shut_down();
         assert!(matches!(pool.submit(|| ()), Err(Error::ShuttingDown)));
     }
@@ -661,9 +708,9 @@ mod tests {
     fn thread_pool_tracking_works() {
         let group = ThreadGroup::new();
         assert_eq!(group.records.lock().unwrap().pools.len(), 0);
-        let pool1 = group.start_pool(None, 0).unwrap();
+        let pool1 = group.start_pool(None, 0, Duration::ZERO).unwrap();
         assert_eq!(group.records.lock().unwrap().pools.len(), 1);
-        let pool2 = group.start_pool(None, 0).unwrap();
+        let pool2 = group.start_pool(None, 0, Duration::ZERO).unwrap();
         assert_eq!(group.records.lock().unwrap().pools.len(), 2);
         pool1.shut_down();
         assert_eq!(group.records.lock().unwrap().pools.len(), 1);
@@ -674,7 +721,7 @@ mod tests {
     #[test]
     fn thread_group_shut_down_stops_pools() {
         let group = ThreadGroup::new();
-        let pool = group.start_pool(None, 0).unwrap();
+        let pool = group.start_pool(None, 0, Duration::ZERO).unwrap();
         group.shut_down();
         assert!(pool.is_shutting_down());
         assert_eq!(group.records.lock().unwrap().pools.len(), 0);
