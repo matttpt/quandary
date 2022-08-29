@@ -18,7 +18,8 @@ use std::os::unix::io::RawFd;
 use std::sync::Arc;
 use std::time::Duration;
 
-use libc::{in6_addr, in6_pktinfo, in_addr, in_pktinfo};
+use cfg_if::cfg_if;
+use libc::{in6_addr, in6_pktinfo, in_addr};
 use nix::cmsg_space;
 use nix::sys::socket::{
     bind, recvmsg, sendmsg, setsockopt, socket, sockopt, AddressFamily, CmsgIterator,
@@ -27,6 +28,9 @@ use nix::sys::socket::{
 };
 use nix::sys::time::{TimeVal, TimeValLike};
 use nix::unistd::close;
+
+#[cfg(any(target_os = "linux", target_os = "netbsd"))]
+use libc::in_pktinfo;
 
 use super::UdpSocketApi;
 
@@ -94,8 +98,13 @@ impl UdpSocketApi for UdpSocket {
             let set_recv_dest_addr_sockopt_result = if addr.is_ipv6() {
                 setsockopt(fd, sockopt::Ipv6RecvPacketInfo, &true)
             } else {
-                #[cfg(any(target_os = "linux", target_os = "netbsd"))]
-                setsockopt(fd, sockopt::Ipv4PacketInfo, &true)
+                cfg_if! {
+                    if #[cfg(any(target_os = "linux", target_os = "netbsd"))] {
+                        setsockopt(fd, sockopt::Ipv4PacketInfo, &true)
+                    } else if #[cfg(target_os = "freebsd")] {
+                        setsockopt(fd, sockopt::Ipv4RecvDstAddr, &true)
+                    }
+                }
             };
             if let Err(e) = set_recv_dest_addr_sockopt_result {
                 let _ = close(fd);
@@ -182,8 +191,15 @@ impl UdpSocketApi for UdpSocket {
                 )
                 .map_err(Into::into)
             } else {
-                let info = make_in_pktinfo(src)?;
-                let cmsgs = [ControlMessage::Ipv4PacketInfo(&info)];
+                cfg_if! {
+                    if #[cfg(any(target_os = "linux", target_os = "netbsd"))] {
+                        let info = make_in_pktinfo(src)?;
+                        let cmsgs = [ControlMessage::Ipv4PacketInfo(&info)];
+                    } else if #[cfg(target_os = "freebsd")] {
+                        let src_in_addr = make_in_addr(src)?;
+                        let cmsgs = [ControlMessage::Ipv4SendSrcAddr(&src_in_addr)];
+                    }
+                }
                 sendmsg(
                     self.data.fd,
                     &iov,
@@ -216,8 +232,13 @@ fn make_cmsg_buf(ipv6: bool) -> Vec<u8> {
     if ipv6 {
         cmsg_space!(in6_pktinfo)
     } else {
-        #[cfg(any(target_os = "linux", target_os = "netbsd"))]
-        cmsg_space!(in_pktinfo)
+        cfg_if! {
+            if #[cfg(any(target_os = "linux", target_os = "netbsd"))] {
+                cmsg_space!(in_pktinfo)
+            } else if #[cfg(target_os = "freebsd")] {
+                cmsg_space!(in_addr)
+            }
+        }
     }
 }
 
@@ -278,6 +299,10 @@ fn extract_dest_addr(ipv6: bool, cmsgs: CmsgIterator) -> io::Result<IpAddr> {
                     info.ipi_addr.s_addr,
                 ))));
             }
+            #[cfg(target_os = "freebsd")]
+            if let ControlMessageOwned::Ipv4RecvDstAddr(addr) = cmsg {
+                return Ok(IpAddr::V4(Ipv4Addr::from(u32::from_be(addr.s_addr))));
+            }
         }
     }
     Err(Error::new(
@@ -320,6 +345,20 @@ fn make_in_pktinfo(src: IpAddr) -> io::Result<in_pktinfo> {
             ipi_addr: in_addr {
                 s_addr: u32::from(src).to_be(),
             },
+        }),
+        IpAddr::V6(_) => Err(Error::new(
+            ErrorKind::InvalidInput,
+            "passed an IPv6 source address to an IPv4 socket",
+        )),
+    }
+}
+
+/// Converts a Rust [`IpAddr`] into an [`in_addr`].
+#[cfg(target_os = "freebsd")]
+fn make_in_addr(src: IpAddr) -> io::Result<in_addr> {
+    match src {
+        IpAddr::V4(src) => Ok(in_addr {
+            s_addr: u32::from(src).to_be(),
         }),
         IpAddr::V6(_) => Err(Error::new(
             ErrorKind::InvalidInput,

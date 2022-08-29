@@ -56,9 +56,9 @@
 //!    for more details.) Furthermore, it's not supported by the Rust
 //!    standard library.
 //!
-//!    This feature is currently available on **Linux** and **NetBSD**
-//!    and is automatically used if it's available. You can determine
-//!    whether your build has it by checking
+//!    This feature is currently available on **Linux**, **NetBSD**, and
+//!    **FreeBSD**. It is automatically used if it's available. You can
+//!    determine whether your build has it by checking
 //!    [`SUPPORTS_LOCAL_ADDRESS_SELECTION`].
 //!
 //! [PowerDNS blog]: https://blog.powerdns.com/2012/10/08/on-binding-datagram-udp-sockets-to-the-any-addresses/
@@ -125,11 +125,11 @@ mod tcp_impl;
 
 /// The implementation of [`UdpSocket`] for this target.
 #[cfg_attr(
-    any(target_os = "linux", target_os = "netbsd"),
+    any(target_os = "linux", target_os = "netbsd", target_os = "freebsd"),
     path = "unix_udp_localaddr.rs"
 )]
 #[cfg_attr(
-    not(any(target_os = "linux", target_os = "netbsd")),
+    not(any(target_os = "linux", target_os = "netbsd", target_os = "freebsd")),
     path = "std_udp.rs"
 )]
 mod udp_impl;
