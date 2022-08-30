@@ -258,12 +258,7 @@ fn extract_src_addr(ipv6: bool, raw_opt: Option<&SockaddrStorage>) -> io::Result
                 "recvmsg did not return an IPv6 source address",
             )
         })?;
-        Ok(SocketAddr::V6(SocketAddrV6::new(
-            raw6.ip(),
-            raw6.port(),
-            raw6.flowinfo(),
-            raw6.scope_id(),
-        )))
+        Ok(SocketAddr::V6(SocketAddrV6::from(*raw6)))
     } else {
         let raw = raw_opt.ok_or_else(|| {
             Error::new(
@@ -277,10 +272,7 @@ fn extract_src_addr(ipv6: bool, raw_opt: Option<&SockaddrStorage>) -> io::Result
                 "recvmsg did not return an IPv4 source address",
             )
         })?;
-        Ok(SocketAddr::V4(SocketAddrV4::new(
-            Ipv4Addr::from(raw4.ip()),
-            raw4.port(),
-        )))
+        Ok(SocketAddr::V4(SocketAddrV4::from(*raw4)))
     }
 }
 
