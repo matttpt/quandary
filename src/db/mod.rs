@@ -87,10 +87,12 @@ pub mod catalog;
 mod error;
 mod hash_map_tree;
 mod rrset;
+mod single_zone_catalog;
 pub mod zone;
 
 pub use catalog::Catalog;
 pub use error::Error;
 pub use hash_map_tree::catalog::HashMapTreeCatalog;
 pub use hash_map_tree::zone::HashMapTreeZone;
+pub use single_zone_catalog::SingleZoneCatalog;
 pub use zone::Zone;
