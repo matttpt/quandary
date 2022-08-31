@@ -259,9 +259,31 @@ where
         let mut timeout = READ_MESSAGE_TIMEOUT;
 
         // Read a DNS message.
-        let mut received_len = None;
-        while n_read < received_len.unwrap_or(0) + 2 {
-            // Do the read, closing the connection if it times out.
+        let mut received_len_opt = None;
+        let received_len = loop {
+            // We start by seeing whether we have read an entire
+            // message, or, barring that, whether we have read the two
+            // octets preceding the next message (which give its
+            // length). This must be done before reading more data from
+            // the network: if a client pipelines messages, we may be
+            // starting the first iteration of this loop with data
+            // (possibly even a whole message!) already in the buffer.
+            if let Some(received_len) = received_len_opt {
+                if n_read >= received_len + 2 {
+                    break received_len;
+                }
+            } else if n_read >= 2 {
+                // We've got the first two octets, so we now know the
+                // message length.
+                let received_len = u16::from_be_bytes([received_buf[0], received_buf[1]]) as usize;
+                if n_read >= received_len + 2 {
+                    break received_len;
+                } else {
+                    received_len_opt = Some(received_len);
+                }
+            }
+
+            // Do the next read, closing the connection if it times out.
             socket.set_read_timeout(Some(timeout))?;
             let n_read_this_time = match socket.read(&mut received_buf[n_read..]) {
                 Ok(n) => n,
@@ -283,22 +305,13 @@ where
                 return Ok(());
             }
 
-            // Update our state.
+            // Prepare for the next iteration.
             n_read += n_read_this_time;
-            if received_len.is_none() && n_read >= 2 {
-                // We've got the first two octets, so we now know the
-                // message length.
-                received_len =
-                    Some(u16::from_be_bytes([received_buf[0], received_buf[1]]) as usize);
-            }
-
-            // Recompute the timeout for the next read.
             timeout = match compute_timeout(deadline) {
                 Some(t) => t,
                 None => return Ok(()),
             }
-        }
-        let received_len = received_len.unwrap();
+        };
 
         // Process the DNS message and write the response, if any.
         match server.handle_message(
@@ -326,7 +339,7 @@ where
 
         // Any leftover data is the start of the next message.
         if n_read > received_len + 2 {
-            response_buf.copy_within(received_len + 2..n_read, 0);
+            received_buf.copy_within(received_len + 2..n_read, 0);
             n_read -= received_len + 2;
         } else {
             n_read = 0;
