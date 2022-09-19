@@ -14,8 +14,9 @@
 
 //! Implements command-line argument parsing.
 
+use std::ffi::OsStr;
 use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::anyhow;
@@ -97,17 +98,36 @@ impl FromStr for ZoneDescription {
                     .map_err(|e| anyhow!("invalid zone name: {}", e))?,
                 path: PathBuf::from(path),
             })
-        } else if let Some(name_without_trailing_dot) = s.strip_suffix(".zone") {
-            Ok(Self {
-                name: format!("{}.", name_without_trailing_dot)
-                    .parse()
-                    .map_err(|e| anyhow!("invalid zone name: {}", e))?,
-                path: PathBuf::from(s),
-            })
+        } else if s.ends_with(".zone") {
+            if let Some(zone_name_without_trailing_dot) =
+                Path::new(s).file_stem().and_then(OsStr::to_str)
+            {
+                Ok(Self {
+                    name: format!("{}.", zone_name_without_trailing_dot)
+                        .parse()
+                        .map_err(|e| anyhow!("invalid zone name: {}", e))?,
+                    path: PathBuf::from(s),
+                })
+            } else {
+                Err(anyhow!("failed to compute zone name from zone file path"))
+            }
         } else {
             Err(anyhow!(
                 "if no zone name is provided, the file name must have the form <NAME>.zone",
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zone_description_from_str_computes_zone_name_from_path_correctly() {
+        let path =
+            PathBuf::from_iter(["path_to", "a", "..", "zone_file", ".", "quandary.test.zone"]);
+        let description: ZoneDescription = path.to_str().unwrap().parse().unwrap();
+        assert_eq!(description.name, "quandary.test.".parse().unwrap());
     }
 }
