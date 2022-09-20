@@ -174,6 +174,7 @@ pub enum ErrorKind {
     OmittedTtlWithNoDefaultOrPrevious,
     OptNotAllowed,
     PqdnWhenOriginNotSet,
+    TsigNotAllowed,
     TxtTooLong,
     UnexpectedEndOfHexRdata,
     UnknownDirective,
@@ -256,6 +257,7 @@ impl fmt::Display for ErrorKind {
             Self::PqdnWhenOriginNotSet => {
                 f.write_str("cannot use a partially qualified domain name when no origin is set")
             }
+            Self::TsigNotAllowed => f.write_str("TSIG records are not allowed in zone files"),
             Self::TxtTooLong => f.write_str("TXT record is too long"),
             Self::UnexpectedEndOfHexRdata => f.write_str("unexpected end of hexadecimal RDATA"),
             Self::UnknownDirective => f.write_str("unknown directive"),

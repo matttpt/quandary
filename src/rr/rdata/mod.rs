@@ -29,10 +29,12 @@ mod ipv6;
 mod opt;
 mod srv;
 mod std13;
+mod tsig;
 pub use ipv6::*;
 pub use opt::*;
 pub use srv::*;
 pub use std13::*;
+pub use tsig::*;
 
 ////////////////////////////////////////////////////////////////////////
 // RDATA TYPE                                                         //
@@ -125,6 +127,7 @@ impl Rdata {
             Type::AAAA => self.validate_as_aaaa(),
             Type::SRV => self.validate_as_srv(),
             Type::OPT => self.validate_as_opt(),
+            Type::TSIG => self.validate_as_tsig(),
             _ => Ok(()),
         }
     }
@@ -197,6 +200,7 @@ impl Rdata {
             Type::AAAA => without_decompression(Self::validate_as_aaaa),
             Type::SRV => with_decompression(Self::read_srv),
             Type::OPT => without_decompression(Self::validate_as_opt),
+            Type::TSIG => without_decompression(Self::validate_as_tsig),
             _ => without_decompression(|_| Ok(())),
         }
     }

@@ -171,6 +171,7 @@ impl<S: Read> Parser<S> {
         match rr_type {
             Type::NULL => Err(Error::new(position, ErrorKind::NullNotAllowed)),
             Type::OPT => Err(Error::new(position, ErrorKind::OptNotAllowed)),
+            Type::TSIG => Err(Error::new(position, ErrorKind::TsigNotAllowed)),
             _ => Ok(rr_type),
         }
     }
