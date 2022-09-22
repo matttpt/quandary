@@ -543,7 +543,7 @@ impl<'a> Writer<'a> {
     pub fn set_edns(&mut self, udp_payload_size: u16) -> Result<()> {
         if self.edns.is_some() {
             Err(Error::AlreadyEdns)
-        } else if self.cursor > self.available - OPT_RECORD_SIZE {
+        } else if self.cursor + OPT_RECORD_SIZE > self.available {
             Err(Error::Truncation)
         } else if let Some(new_arcount) = self.arcount.checked_add(1) {
             self.arcount = new_arcount;
