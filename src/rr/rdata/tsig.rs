@@ -19,6 +19,9 @@
 //!
 //! [RFC 8945]: https://datatracker.ietf.org/doc/html/rfc8945
 
+use std::fmt;
+use std::time::{Duration, SystemTime};
+
 use super::{Rdata, RdataTooLongError, ReadRdataError};
 use crate::message::ExtendedRcode;
 use crate::name::Name;
@@ -34,7 +37,7 @@ use crate::name::Name;
 #[allow(clippy::too_many_arguments)]
 pub fn serialize_tsig(
     algorithm: &Name,
-    time_signed: [u8; 6],
+    time_signed: TimeSigned,
     fudge: u16,
     mac: &[u8],
     original_id: u16,
@@ -62,7 +65,7 @@ pub fn serialize_tsig(
 #[allow(clippy::too_many_arguments)]
 fn serialize_tsig_unchecked(
     algorithm: &Name,
-    time_signed: [u8; 6],
+    time_signed: TimeSigned,
     fudge: u16,
     mac: &[u8],
     original_id: u16,
@@ -98,7 +101,7 @@ impl Rdata {
     /// 65,535-octet limit and returns an error if so.
     pub fn new_tsig(
         algorithm: &Name,
-        time_signed: [u8; 6],
+        time_signed: TimeSigned,
         fudge: u16,
         mac: &[u8],
         original_id: u16,
@@ -148,6 +151,123 @@ impl Rdata {
 }
 
 ////////////////////////////////////////////////////////////////////////
+// TSIG TIME-SIGNED FIELD                                             //
+////////////////////////////////////////////////////////////////////////
+
+/// A convenience type for working with the TSIG "time signed" field.
+///
+/// The "time signed" field is represented on the wire as an unsigned
+/// 48-bit big-endian integer giving the number of seconds since the
+/// Unix epoch, not counting leap seconds—i.e., Unix time. This type
+/// allows conversions between this on-the-wire format (which is used as
+/// the internal representation), Unix time expressed with a [`u64`],
+/// and Rust's [`SystemTime`].
+///
+/// Note that for conversions involving [`SystemTime`] to be strictly
+/// correct, Rust's [`SystemTime`] must not be leap-second aware. That
+/// is, when a [`SystemTime`] is compared to [`SystemTime::UNIX_EPOCH`],
+/// the resulting [`Duration`] must not include leap seconds. The Rust
+/// documentation does not make this guarantee; however, the
+/// implementations for Unix and Windows currently work this way.
+///
+/// Even if leap seconds are included, TSIG records with a
+/// [`SystemTime`]-derived "time signed" field should still validate if
+/// the [recommended fudge value][RFC 8945 § 10] of 300 seconds is used
+/// (as of September 2022, when Unix time was 27 seconds behind the
+/// *actual* number of seconds since the Unix epoch).
+///
+/// [RFC 8945 § 10]: https://datatracker.ietf.org/doc/html/rfc8945#section-10
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub struct TimeSigned([u8; 6]);
+
+impl TimeSigned {
+    /// Converts Unix time expressed as a [`u64`] into a `TimeSigned`
+    /// (which is internally Unix time as an unsigned 48-bit integer).
+    /// This fails if the conversion would truncate the time.
+    pub fn try_from_unix_time(seconds: u64) -> Result<Self, UnrepresentableTimeError> {
+        let octets = seconds.to_be_bytes();
+        if octets[0] != 0 || octets[1] != 0 {
+            Err(UnrepresentableTimeError)
+        } else {
+            Ok(Self(octets[2..8].try_into().unwrap()))
+        }
+    }
+
+    /// Converts a `TimeSigned` into Unix time expressed as a [`u64`].
+    pub fn to_unix_time(self) -> u64 {
+        let mut octets = [0; 8];
+        octets[2..8].copy_from_slice(self.0.as_slice());
+        u64::from_be_bytes(octets)
+    }
+
+    /// Borrows the `TimeSigned`'s internal representation (an unsigned
+    /// 48-bit big-endian integer) as an array.
+    pub fn as_array(&self) -> &[u8; 6] {
+        &self.0
+    }
+
+    /// Borrows the `TimeSigned`'s internal representation (an unsigned
+    /// 48-bit big-endian integer) as a slice.
+    pub fn as_slice(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+}
+
+impl From<[u8; 6]> for TimeSigned {
+    fn from(octets: [u8; 6]) -> Self {
+        Self(octets)
+    }
+}
+
+impl From<TimeSigned> for [u8; 6] {
+    fn from(time_signed: TimeSigned) -> Self {
+        time_signed.0
+    }
+}
+
+impl TryFrom<SystemTime> for TimeSigned {
+    type Error = UnrepresentableTimeError;
+
+    fn try_from(system_time: SystemTime) -> Result<Self, Self::Error> {
+        if let Ok(since_epoch) = system_time.duration_since(SystemTime::UNIX_EPOCH) {
+            Self::try_from_unix_time(since_epoch.as_secs())
+        } else {
+            Err(UnrepresentableTimeError)
+        }
+    }
+}
+
+impl TryFrom<TimeSigned> for SystemTime {
+    type Error = UnrepresentableTimeError;
+
+    fn try_from(time_signed: TimeSigned) -> Result<Self, Self::Error> {
+        SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(time_signed.to_unix_time()))
+            .ok_or(UnrepresentableTimeError)
+    }
+}
+
+impl fmt::Debug for TimeSigned {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.to_unix_time())
+    }
+}
+
+/// An error signifying that a TSIG time conversion failed, due to the
+/// the time from the source type not being representable in the target
+/// type.
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+pub struct UnrepresentableTimeError;
+
+impl fmt::Display for UnrepresentableTimeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("TSIG time conversion failed due to unrepresentable time")
+    }
+}
+
+impl std::error::Error for UnrepresentableTimeError {}
+
+////////////////////////////////////////////////////////////////////////
 // TESTS                                                              //
 ////////////////////////////////////////////////////////////////////////
 
@@ -165,8 +285,8 @@ mod tests {
 
     lazy_static! {
         static ref ALGORITHM: Box<Name> = "hmac-sha256.".parse().unwrap();
+        static ref TIME_SIGNED: TimeSigned = TimeSigned::try_from_unix_time(0x632912b4).unwrap();
     }
-    const TIME_SIGNED: &[u8; 6] = b"\x00\x00\x63\x29\x12\xb4";
     const FUDGE: u16 = 300;
     const MAC: &[u8] = b"\
         \xfe\x60\x1b\xa4\xb2\x4a\x33\x48\xd3\x47\xe4\x4e\x8e\x02\xdf\x7b\
