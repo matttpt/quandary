@@ -73,6 +73,11 @@ impl Label {
         unsafe { &*(octets as *const [u8] as *const Label) }
     }
 
+    /// The mutable version of [`Label::from_unchecked`].
+    pub(super) fn from_unchecked_mut(octets: &mut [u8]) -> &mut Self {
+        unsafe { &mut *(octets as *mut [u8] as *mut Label) }
+    }
+
     /// Returns whether this `Label` is the asterisk label.
     pub fn is_asterisk(&self) -> bool {
         self == Self::asterisk()
@@ -96,6 +101,11 @@ impl Label {
     /// Returns the octets of this `Label`.
     pub fn octets(&self) -> &[u8] {
         &self.octets
+    }
+
+    /// Returns a mutable reference to the octets of this `Label`.
+    pub fn octets_mut(&mut self) -> &mut [u8] {
+        &mut self.octets
     }
 }
 

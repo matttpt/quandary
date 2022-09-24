@@ -19,7 +19,7 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::iter::FusedIterator;
-use std::ops::Index;
+use std::ops::{Index, IndexMut};
 use std::ptr;
 use std::str::FromStr;
 
@@ -367,6 +367,14 @@ impl Name {
         &self.data[self.len()..]
     }
 
+    /// The mutable version of [`Name::wire_repr`] for internal use. All
+    /// (internal) users must be sure to keep the label count and label
+    /// offsets in sync with any modifications made.
+    pub fn wire_repr_mut(&mut self) -> &mut [u8] {
+        let len = self.len();
+        &mut self.data[len..]
+    }
+
     /// Returns the (uncompressed) on-the-wire representation of the
     /// first `n` labels of the `Name`. This will panic if
     /// `n > self.len()`.
@@ -399,6 +407,16 @@ impl Index<usize> for Name {
         let start = offset + 1;
         let end = start + len;
         Label::from_unchecked(&self.wire_repr()[start..end])
+    }
+}
+
+impl IndexMut<usize> for Name {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        let offset = self.label_offset(index);
+        let len = self.wire_repr()[offset] as usize;
+        let start = offset + 1;
+        let end = start + len;
+        Label::from_unchecked_mut(&mut self.wire_repr_mut()[start..end])
     }
 }
 
