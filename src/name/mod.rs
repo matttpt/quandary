@@ -28,10 +28,12 @@ use arrayvec::ArrayVec;
 mod builder;
 mod error;
 mod label;
+mod lowercase;
 mod wire;
 pub use builder::NameBuilder;
 pub use error::Error;
 pub use label::{Label, LabelBuf};
+pub use lowercase::LowercaseName;
 
 /// The maximum number of labels in a domain name.
 const MAX_N_LABELS: usize = 128;
@@ -260,6 +262,20 @@ impl Name {
     /// Returns the number of labels in this `Name`.
     pub fn len(&self) -> usize {
         self.n_labels as usize
+    }
+
+    /// Makes all ASCII letters in this `Name` lowercase.
+    ///
+    /// This is provided with [RFC 4034 § 6.2] (DNSSEC canonical RR
+    /// form) in mind. See also [`LowercaseName`].
+    ///
+    /// [RFC 4034 § 6.2]: https://datatracker.ietf.org/doc/html/rfc4034#section-6.2
+    pub fn make_ascii_lowercase(&mut self) {
+        // NOTE: we just iterate manually, since writing a LabelsMut
+        // iterator is tricky due to lifetime issues.
+        for i in 0..self.len() {
+            self[i].octets_mut().make_ascii_lowercase();
+        }
     }
 
     /// Returns a reference to a `Name` representing the DNS root, `.`.
@@ -889,5 +905,12 @@ mod tests {
         assert_eq!("\\00".parse::<Box<Name>>(), Err(Error::InvalidEscape));
         assert_eq!("\\00x.".parse::<Box<Name>>(), Err(Error::InvalidEscape));
         assert_eq!("\\256.".parse::<Box<Name>>(), Err(Error::InvalidEscape));
+    }
+
+    #[test]
+    fn make_ascii_lowercase_works() {
+        let mut name: Box<Name> = "UPPERCASE.Domain.Test.".parse().unwrap();
+        name.make_ascii_lowercase();
+        assert_eq!(name.wire_repr(), b"\x09uppercase\x06domain\x04test\x00");
     }
 }
