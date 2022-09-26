@@ -219,6 +219,11 @@ impl<'a> Reader<'a> {
     pub fn at_eom(&self) -> bool {
         self.cursor >= self.octets.len()
     }
+
+    /// Returns the message up to the current cursor.
+    pub fn message_to_cursor(&self) -> &'a [u8] {
+        &self.octets[0..self.cursor]
+    }
 }
 
 impl<'a> TryFrom<&'a [u8]> for Reader<'a> {
@@ -346,6 +351,11 @@ impl<'r, 'b> PeekRr<'r, 'b> {
                 .try_into()
                 .unwrap(),
         )
+    }
+
+    /// Returns the message up to, but not including, the current RR.
+    pub fn message_to_rr(&self) -> &'b [u8] {
+        self.reader.message_to_cursor()
     }
 
     /// Advances the parent [`Reader`] to the end of the resource record
