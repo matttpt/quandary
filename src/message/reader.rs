@@ -147,6 +147,26 @@ impl<'a> Reader<'a> {
         })
     }
 
+    /// Skips a question at the current cursor.
+    ///
+    /// Note that the QNAME is not fully validated. If it is compressed,
+    /// then it is checked only until the first pointer label.
+    ///
+    /// This method is atomic, in that the cursor is not changed on
+    /// failure.
+    pub fn skip_question(&mut self) -> Result<()> {
+        let qname_len =
+            Name::skip_compressed(&self.octets[self.cursor..]).map_err(Error::InvalidOwner)?;
+        let qname_end = self.cursor + qname_len;
+        let question_end = qname_end + 4;
+        if question_end > self.octets.len() {
+            Err(Error::UnexpectedEomInField)
+        } else {
+            self.cursor = question_end;
+            Ok(())
+        }
+    }
+
     /// Reads a resource record at the current cursor.
     ///
     /// This method is atomic, in that the cursor is not changed on
@@ -582,9 +602,16 @@ mod tests {
     }
 
     #[test]
+    fn reader_skip_question_works() {
+        let mut reader = Reader::try_from(EXAMPLE_COM_NS_MESSAGE).unwrap();
+        reader.skip_question().unwrap();
+        assert_eq!(reader.cursor, 29);
+    }
+
+    #[test]
     fn reader_skip_rr_works() {
         let mut reader = Reader::try_from(EXAMPLE_COM_NS_MESSAGE).unwrap();
-        reader.read_question().unwrap();
+        reader.skip_question().unwrap();
         reader.skip_rr().unwrap();
         assert_eq!(reader.cursor, 61);
     }
@@ -592,7 +619,7 @@ mod tests {
     #[test]
     fn peek_rr_owner_works() {
         let mut reader = Reader::try_from(EXAMPLE_COM_NS_MESSAGE).unwrap();
-        reader.read_question().unwrap();
+        reader.skip_question().unwrap();
         let mut peek_rr = reader.peek_rr().unwrap();
         assert_eq!(peek_rr.owner(), Ok(EXAMPLE_COM.as_ref()));
     }
@@ -600,7 +627,7 @@ mod tests {
     #[test]
     fn peek_rr_skip_works() {
         let mut reader = Reader::try_from(EXAMPLE_COM_NS_MESSAGE).unwrap();
-        reader.read_question().unwrap();
+        reader.skip_question().unwrap();
         let peek_rr = reader.peek_rr().unwrap();
         peek_rr.skip();
         assert_eq!(reader.cursor, 61);
@@ -609,7 +636,7 @@ mod tests {
     #[test]
     fn peek_rr_parse_works() {
         let mut reader = Reader::try_from(EXAMPLE_COM_NS_MESSAGE).unwrap();
-        reader.read_question().unwrap();
+        reader.skip_question().unwrap();
         let peek_rr = reader.peek_rr().unwrap();
         let answer = peek_rr.parse().unwrap();
         assert_eq!(reader.cursor, 61);

@@ -824,7 +824,7 @@ mod tests {
         rrs_to_skip: usize,
     ) -> (&'static [u8], ReadTsigRr<'static>) {
         let mut reader = Reader::try_from(message).unwrap();
-        reader.read_question().unwrap();
+        reader.skip_question().unwrap();
         for _ in 0..rrs_to_skip {
             reader.skip_rr().unwrap();
         }
