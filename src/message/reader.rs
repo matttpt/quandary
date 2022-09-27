@@ -135,7 +135,7 @@ impl<'a> Reader<'a> {
     /// failure.
     pub fn read_question(&mut self) -> Result<Question> {
         let (qname, qname_len) =
-            Name::try_from_compressed(self.octets, self.cursor).map_err(Error::InvalidOwner)?;
+            Name::try_from_compressed(self.octets, self.cursor).map_err(Error::InvalidQname)?;
         let qname_end = self.cursor + qname_len;
         let qtype = read_u16(&self.octets[qname_end..])?.into();
         let qclass = read_u16(&self.octets[qname_end + 2..])?.into();
@@ -156,7 +156,7 @@ impl<'a> Reader<'a> {
     /// failure.
     pub fn skip_question(&mut self) -> Result<()> {
         let qname_len =
-            Name::skip_compressed(&self.octets[self.cursor..]).map_err(Error::InvalidOwner)?;
+            Name::skip_compressed(&self.octets[self.cursor..]).map_err(Error::InvalidQname)?;
         let qname_end = self.cursor + qname_len;
         let question_end = qname_end + 4;
         if question_end > self.octets.len() {
@@ -463,6 +463,7 @@ pub struct ReadRr<'a> {
 pub enum Error {
     HeaderTooShort,
     UnexpectedEomInField,
+    InvalidQname(name::Error),
     InvalidOwner(name::Error),
     InvalidRdata(ReadRdataError),
 }
@@ -478,6 +479,7 @@ impl fmt::Display for Error {
         match *self {
             Self::HeaderTooShort => f.write_str("header too short"),
             Self::UnexpectedEomInField => f.write_str("unexpected end of message in field"),
+            Self::InvalidQname(err) => write!(f, "invalid QNAME: {}", err),
             Self::InvalidOwner(err) => write!(f, "invalid owner: {}", err),
             Self::InvalidRdata(err) => err.fmt(f),
         }
