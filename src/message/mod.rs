@@ -19,6 +19,7 @@ mod opcode;
 mod question;
 mod rcode;
 pub mod reader;
+pub mod tsig;
 pub mod writer;
 pub use opcode::{IntoOpcodeError, Opcode};
 pub use question::{Qclass, Qtype, Question};

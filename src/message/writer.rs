@@ -18,9 +18,10 @@
 use std::fmt;
 
 use super::constants::*;
-use super::{ExtendedRcode, Opcode, Question, Rcode};
+use super::tsig::{Algorithm, PreparedTsigRr};
+use super::{ExtendedRcode, Opcode, Qclass, Question, Rcode};
 use crate::class::Class;
-use crate::name::Name;
+use crate::name::{LowercaseName, Name};
 use crate::rr::{Rdata, RdataSet, Ttl, Type};
 
 ////////////////////////////////////////////////////////////////////////
@@ -58,6 +59,11 @@ use crate::rr::{Rdata, RdataSet, Ttl, Type};
 /// For EDNS messages, use [`Writer::set_edns`]. Space for an OPT record
 /// will be reserved, and the OPT record will be automatically added to
 /// the message when [`Writer::finish`] is called.
+///
+/// For messages with TSIG authentication, use [`Writer::set_tsig`].
+/// Space for a TSIG record will be reserved, and the TSIG record will
+/// be automatically added as the last RR when [`Writer::finish`] is
+/// called.
 pub struct Writer<'a> {
     octets: &'a mut [u8],
     limit: usize,
@@ -73,6 +79,7 @@ pub struct Writer<'a> {
     most_recent_rdata: Option<u16>,
     compression: bool,
     edns: Option<Edns>,
+    tsig: Option<Tsig>,
 }
 
 /// A type for recording which section of a DNS message a [`Writer`] is
@@ -90,6 +97,35 @@ enum Section {
 struct Edns {
     udp_payload_size: u16,
     extended_rcode_upper_bits: u8,
+}
+
+/// A type for recording TSIG information for a message until it is
+/// serialized in [`Writer::finish`].
+struct Tsig {
+    mode: TsigMode,
+    reserved_len: usize,
+    rr: PreparedTsigRr,
+}
+
+/// Specifies if and how to sign a message with a TSIG RR.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum TsigMode {
+    /// The message should be signed as a request.
+    Request {
+        algorithm: Algorithm,
+        key: Box<[u8]>,
+    },
+
+    /// The message should be signed as a response.
+    Response {
+        algorithm: Algorithm,
+        request_mac: Box<[u8]>,
+        key: Box<[u8]>,
+    },
+
+    /// The message should not be signed. The MAC field of the TSIG RR
+    /// will be left empty.
+    Unsigned { algorithm: Box<LowercaseName> },
 }
 
 /// The amount of space we need to reserve for the OPT record. (Since we
@@ -124,6 +160,7 @@ impl<'a> Writer<'a> {
                 most_recent_rdata: None,
                 compression: true,
                 edns: None,
+                tsig: None,
             })
         }
     }
@@ -525,10 +562,12 @@ impl<'a> Writer<'a> {
     pub fn clear_rrs(&mut self) {
         self.ancount = 0;
         self.nscount = 0;
+        self.arcount = 0;
         if self.edns.is_some() {
-            self.arcount = 1;
-        } else {
-            self.arcount = 0;
+            self.arcount += 1;
+        }
+        if self.tsig.is_some() {
+            self.arcount += 1;
         }
         self.cursor = self.rr_start;
         self.section = Section::Question;
@@ -558,14 +597,59 @@ impl<'a> Writer<'a> {
         }
     }
 
+    /// Makes this a TSIG-secured message. This will reserve space at
+    /// the end of the message for the TSIG record; if there is
+    /// insufficent space, then this will fail. This will also fail if
+    /// this is already a TSIG message.
+    pub fn set_tsig(&mut self, mode: TsigMode, rr: PreparedTsigRr) -> Result<()> {
+        if self.tsig.is_some() {
+            return Err(Error::AlreadyTsig);
+        }
+
+        let reserved_len = match &mode {
+            TsigMode::Request { algorithm, key: _ } => rr.signed_len(*algorithm),
+            TsigMode::Response {
+                request_mac: _,
+                algorithm,
+                key: _,
+            } => rr.signed_len(*algorithm),
+            TsigMode::Unsigned { algorithm } => rr.unsigned_len(algorithm),
+        };
+        if self.cursor + reserved_len > self.available {
+            Err(Error::Truncation)
+        } else if let Some(new_arcount) = self.arcount.checked_add(1) {
+            self.arcount = new_arcount;
+            self.available -= reserved_len;
+            self.tsig = Some(Tsig {
+                mode,
+                reserved_len,
+                rr,
+            });
+            Ok(())
+        } else {
+            Err(Error::CountOverflow)
+        }
+    }
+
     /// Finishes writing the message. The final length of the message
     /// is returned.
     pub fn finish(mut self) -> usize {
+        self.write_u16(QDCOUNT_START, self.qdcount);
+        self.write_u16(ANCOUNT_START, self.ancount);
+        self.write_u16(NSCOUNT_START, self.nscount);
+        self.write_u16(ARCOUNT_START, self.arcount);
+
+        // We finish up by writing any OPT or TSIG records that need to
+        // go at the end of the message. (In particular, TSIG *must* be
+        // the last record in the message, since it carries a signature
+        // for everything that preceded it.) In each case, before we
+        // write the RR, we need to update the "available" field to undo
+        // the space reservation we made for the RR, since
+        // Reader::add_rr checks it. The unwraps after Reader::add_rr
+        // are okay, since (through the reservation) we've ensured that
+        // there will be enough space.
+
         if let Some(ref edns) = self.edns {
-            // We update the "available" field before adding the OPT RR,
-            // since Reader::add_rr checks it. The unwrap after add_rr
-            // is okay, since we've ensured that there will be enough
-            // space.
             let class = Class::from(edns.udp_payload_size);
             let ttl = Ttl::from((edns.extended_rcode_upper_bits as u32) << 24);
             self.available += OPT_RECORD_SIZE;
@@ -578,10 +662,34 @@ impl<'a> Writer<'a> {
             )
             .unwrap();
         }
-        self.write_u16(QDCOUNT_START, self.qdcount);
-        self.write_u16(ANCOUNT_START, self.ancount);
-        self.write_u16(NSCOUNT_START, self.nscount);
-        self.write_u16(ARCOUNT_START, self.arcount);
+
+        if let Some(tsig) = self.tsig.take() {
+            let message = &self.octets[0..self.cursor];
+            let rdata = match &tsig.mode {
+                TsigMode::Request { algorithm, key } => {
+                    tsig.rr.sign_request(message, *algorithm, key).0
+                }
+                TsigMode::Response {
+                    request_mac,
+                    algorithm,
+                    key,
+                } => {
+                    tsig.rr
+                        .sign_response(message, request_mac, *algorithm, key)
+                        .0
+                }
+                TsigMode::Unsigned { algorithm } => tsig.rr.unsigned(algorithm),
+            };
+            self.available += tsig.reserved_len;
+            self.add_rr(
+                HintedName::new(Hint::None, &tsig.rr.key_name),
+                Type::TSIG,
+                Qclass::ANY.into(),
+                Ttl::from(0),
+                &rdata,
+            )
+            .unwrap();
+        }
         self.cursor
     }
 
@@ -783,6 +891,13 @@ pub enum Error {
 
     /// An attempt was made to set an extended RCODE over 4,095.
     ExtendedRcodeOverflow,
+
+    /// An attempt was made to made to set TSIG parameters on a non-TSIG
+    /// message.
+    NotTsig,
+
+    /// An attempt was made to set up TSIG, but TSIG is already enabled.
+    AlreadyTsig,
 }
 
 impl fmt::Display for Error {
@@ -794,6 +909,8 @@ impl fmt::Display for Error {
             Self::NotEdns => f.write_str("not an EDNS message"),
             Self::AlreadyEdns => f.write_str("already an EDNS message"),
             Self::ExtendedRcodeOverflow => f.write_str("extended RCODE would overflow"),
+            Self::NotTsig => f.write_str("not a TSIG message"),
+            Self::AlreadyTsig => f.write_str("already a TSIG message"),
         }
     }
 }
@@ -809,10 +926,14 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
 mod tests {
+    // NOTE: tests for TSIG signing with Writer are located with the
+    // main TSIG implementation in tsig.rs.
+
     use lazy_static::lazy_static;
 
     use super::super::Question;
     use super::*;
+    use crate::rr::rdata::TimeSigned;
     use crate::rr::RdataSetOwned;
 
     static TYPE: Type = Type::A;
@@ -829,6 +950,20 @@ mod tests {
         static ref TTL: Ttl = Ttl::from(3600);
         static ref RDATA: &'static Rdata = b"\x7f\x00\x00\x01".try_into().unwrap();
         static ref RDATAS: RdataSetOwned = (*RDATA).into();
+        static ref TSIG_MODE: TsigMode = TsigMode::Unsigned {
+            algorithm: Algorithm::HmacSha256.name().to_owned(),
+        };
+        static ref TSIG_RR: PreparedTsigRr = {
+            let time_signed = TimeSigned::try_from_unix_time(0).unwrap();
+            PreparedTsigRr {
+                key_name: "a.tsig.key.".parse().unwrap(),
+                time_signed,
+                fudge: 300,
+                original_id: 0,
+                error: ExtendedRcode::NOERROR,
+                server_time: time_signed,
+            }
+        };
     }
 
     #[test]
@@ -1124,6 +1259,17 @@ mod tests {
     }
 
     #[test]
+    fn set_tsig_fails_if_repeated() {
+        let mut buf = [0; 512];
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        writer.set_tsig(TSIG_MODE.clone(), TSIG_RR.clone()).unwrap();
+        assert_eq!(
+            writer.set_tsig(TSIG_MODE.clone(), TSIG_RR.clone()),
+            Err(Error::AlreadyTsig),
+        );
+    }
+
+    #[test]
     fn set_rcode_zeroes_extended_rcode_upper_bits() {
         let mut buf = [0; 512];
         let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
@@ -1256,5 +1402,38 @@ mod tests {
               \x08quandary\x04test\x00\x00\x01\x00\x01\x00\x00\x0e\x10\x00\x04\
               \x7f\x00\x00\x01",
         );
+    }
+
+    #[test]
+    fn clear_rrs_keeps_pseudo_rrs() {
+        let mut buf = [0; 512];
+
+        // Test an EDNS-only message.
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        writer
+            .add_answer_rr(*HINTED_NAME, Type::A, CLASS, *TTL, &RDATA)
+            .unwrap();
+        writer.set_edns(512).unwrap();
+        writer.clear_rrs();
+        assert_eq!(writer.arcount, 1);
+
+        // Test a TSIG-only message.
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        writer
+            .add_answer_rr(*HINTED_NAME, Type::A, CLASS, *TTL, &RDATA)
+            .unwrap();
+        writer.set_tsig(TSIG_MODE.clone(), TSIG_RR.clone()).unwrap();
+        writer.clear_rrs();
+        assert_eq!(writer.arcount, 1);
+
+        // Test an EDNS + TSIG message.
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        writer
+            .add_answer_rr(*HINTED_NAME, Type::A, CLASS, *TTL, &RDATA)
+            .unwrap();
+        writer.set_edns(512).unwrap();
+        writer.set_tsig(TSIG_MODE.clone(), TSIG_RR.clone()).unwrap();
+        writer.clear_rrs();
+        assert_eq!(writer.arcount, 2);
     }
 }
