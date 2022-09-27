@@ -86,7 +86,7 @@ enum Section {
 }
 
 /// A type for recording EDNS information for a message until it is
-/// serialized in [Writer::finish].
+/// serialized in [`Writer::finish`].
 struct Edns {
     udp_payload_size: u16,
     extended_rcode_upper_bits: u8,
