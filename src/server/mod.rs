@@ -18,6 +18,7 @@
 //! documentation for details.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, RwLock};
@@ -59,7 +60,19 @@ pub struct Server<C> {
     catalog: RwLock<Arc<C>>,
     edns_udp_payload_size: u16,
     rrl: Option<Rrl>,
+    tsig_keys: RwLock<Arc<TsigKeyMap>>,
 }
+
+/// A [`HashMap`] giving a [`Server`]'s TSIG keys and their algorithms
+/// by name.
+///
+/// While [RFC 8945] does not seem to prevent a single TSIG key from
+/// being used with multiple algorithms, practically speaking, the key
+/// length should be based on the algorithm in use. Therefore, we limit
+/// each key to a single algorithm, as do other DNS implementations.
+///
+/// [RFC 8945]: https://datatracker.ietf.org/doc/html/rfc8945
+pub type TsigKeyMap = HashMap<Box<Name>, (Algorithm, Box<[u8]>)>;
 
 impl<C> Server<C> {
     /// Creates a new `Server` that will serve the provided catalog.
@@ -77,6 +90,7 @@ impl<C> Server<C> {
             catalog: RwLock::new(catalog),
             edns_udp_payload_size: 1232,
             rrl: None,
+            tsig_keys: RwLock::new(Arc::new(TsigKeyMap::new())),
         }
     }
 
@@ -115,6 +129,16 @@ impl<C> Server<C> {
     /// `None`, then rate-limiting is disabled.
     pub fn set_rrl_params(&mut self, rrl_params: Option<RrlParams>) {
         self.rrl = rrl_params.map(Rrl::new);
+    }
+
+    /// Returns the `Server`'s current set of TSIG keys.
+    pub fn tsig_keys(&self) -> Arc<TsigKeyMap> {
+        self.tsig_keys.read().unwrap().clone()
+    }
+
+    /// Sets the `Server`'s set of TSIG keys.
+    pub fn set_tsig_keys(&self, tsig_keys: Arc<TsigKeyMap>) {
+        *self.tsig_keys.write().unwrap() = tsig_keys;
     }
 }
 
@@ -402,7 +426,14 @@ where
                     Some(algorithm) => algorithm,
                     None => return,
                 };
-                let key = match find_tsig_key_or_write_error(&tsig_rr, now, &mut context.response) {
+                let tsig_keys = self.tsig_keys();
+                let key = match find_tsig_key_or_write_error(
+                    &tsig_rr,
+                    algorithm,
+                    &tsig_keys,
+                    now,
+                    &mut context.response,
+                ) {
                     Some(key) => key,
                     None => return,
                 };
@@ -605,21 +636,31 @@ fn find_tsig_algorithm_or_write_error(
 /// response and the function returns `None`.
 fn find_tsig_key_or_write_error<'k>(
     tsig_rr: &ReadTsigRr,
+    algorithm: Algorithm,
+    tsig_keys: &'k TsigKeyMap,
     now: TimeSigned,
     response: &mut Writer,
 ) -> Option<&'k [u8]> {
-    // TODO: we don't yet implement a TSIG key store, so for now this
-    // step always fails.
-    response.set_rcode(Rcode::NOTAUTH);
-    response
-        .set_tsig(
-            writer::TsigMode::Unsigned {
-                algorithm: tsig_rr.algorithm().to_owned(),
-            },
-            PreparedTsigRr::new_from_read(tsig_rr, now, TSIG_FUDGE, ExtendedRcode::BADKEY),
-        )
-        .unwrap();
-    None
+    // We need to (a) find the key with the name specified by the
+    // received TSIG RR, and (b) make sure that the algorithm associated
+    // with that key is the one that the other party is using.
+    if let Some((_, key)) = tsig_keys
+        .get(tsig_rr.key_name().as_ref())
+        .filter(|(a, _)| *a == algorithm)
+    {
+        Some(key)
+    } else {
+        response.set_rcode(Rcode::NOTAUTH);
+        response
+            .set_tsig(
+                writer::TsigMode::Unsigned {
+                    algorithm: tsig_rr.algorithm().to_owned(),
+                },
+                PreparedTsigRr::new_from_read(tsig_rr, now, TSIG_FUDGE, ExtendedRcode::BADKEY),
+            )
+            .unwrap();
+        None
+    }
 }
 
 /// Verifies a received message with a TSIG RR. A TSIG RR with the
