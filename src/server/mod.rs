@@ -21,11 +21,14 @@ use std::borrow::Cow;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, RwLock};
+use std::time::SystemTime;
 
 use crate::db::Catalog;
 use crate::message::reader::ReadRr;
-use crate::message::{writer, ExtendedRcode, Opcode, Question, Rcode, Reader, Writer};
-use crate::name::Name;
+use crate::message::tsig::{Algorithm, PreparedTsigRr, ReadTsigRr};
+use crate::message::{tsig, writer, ExtendedRcode, Opcode, Question, Rcode, Reader, Writer};
+use crate::name::{LowercaseName, Name};
+use crate::rr::rdata::TimeSigned;
 use crate::rr::Type;
 
 mod query;
@@ -274,7 +277,9 @@ where
 
         // Scan all the answer and authority RRs. RFC 6891 § 6.1.1 says
         // that the EDNS OPT record goes in additional section, so if we
-        // see it in these two sections, return FORMERR.
+        // see it in these two sections, return FORMERR. Similarly, RFC
+        // 8945 § 5.1 requires that the TSIG record be in the additional
+        // section, so if we see it, then that's also a FORMERR.
         let an_plus_ns_count =
             context.received.ancount() as usize + context.received.nscount() as usize;
         for _ in 0..an_plus_ns_count {
@@ -285,7 +290,7 @@ where
                     return;
                 }
             };
-            if peek_rr.rr_type() == Type::OPT {
+            if matches!(peek_rr.rr_type(), Type::OPT | Type::TSIG) {
                 context.response.set_rcode(Rcode::FORMERR);
                 return;
             } else {
@@ -293,10 +298,11 @@ where
             }
         }
 
-        // Scan the additional section. If we see an OPT, now's the time
-        // to process it.
+        // Scan the additional section. If we see an OPT or TSIG, now's
+        // the time to process it.
         let mut seen_opt = false;
-        for _ in 0..context.received.arcount() as usize {
+        let arcount = context.received.arcount() as usize;
+        for index in 0..arcount {
             let peek_rr = match context.received.peek_rr() {
                 Ok(p) => p,
                 Err(_) => {
@@ -351,6 +357,70 @@ where
                         .expect("failed to set extended RCODE");
                     return;
                 }
+            } else if peek_rr.rr_type() == Type::TSIG {
+                // Per RFC 8945 § 5.1, there can be at most one TSIG
+                // record, and it must be the final record in the
+                // message. Otherwise, we must return FORMERR.
+                if index != arcount - 1 {
+                    context.response.set_rcode(Rcode::FORMERR);
+                    return;
+                }
+
+                // Parse the TSIG RR.
+                let message_without_tsig = peek_rr.message_to_rr();
+                let read_rr = match peek_rr.parse() {
+                    Ok(read_rr) => read_rr,
+                    Err(_) => {
+                        context.response.set_rcode(Rcode::FORMERR);
+                        return;
+                    }
+                };
+                let tsig_rr = match ReadTsigRr::try_from(read_rr) {
+                    Ok(tsig_rr) => tsig_rr,
+                    Err(tsig::FromReadRrError::FormErr) => {
+                        context.response.set_rcode(Rcode::FORMERR);
+                        return;
+                    }
+                    Err(tsig::FromReadRrError::NotTsig) => {
+                        panic!("tried to parse a non-TSIG record as a TSIG record; this is a bug")
+                    }
+                };
+
+                // Validate the TSIG RR and add a TSIG RR of our own to
+                // the response. (Each step will, upon encountering an
+                // error, add a TSIG RR with the appropriate RCODE to
+                // the response. Thus, all we need to do here in such
+                // cases is to return.)
+                let now = SystemTime::now().try_into().expect(
+                    "the system time cannot be expressed in the TSIG \"time signed\" field",
+                );
+                let algorithm = match find_tsig_algorithm_or_write_error(
+                    &tsig_rr,
+                    now,
+                    &mut context.response,
+                ) {
+                    Some(algorithm) => algorithm,
+                    None => return,
+                };
+                let key = match find_tsig_key_or_write_error(&tsig_rr, now, &mut context.response) {
+                    Some(key) => key,
+                    None => return,
+                };
+                if !verify_tsig_and_write_tsig_rr(
+                    &tsig_rr,
+                    message_without_tsig,
+                    algorithm,
+                    key,
+                    now,
+                    &mut context.response,
+                ) {
+                    return;
+                }
+
+                // Validation succeeded. By saving the key name, we
+                // indicate that the message successfully authenticated
+                // with that key.
+                context.tsig_key = Some(tsig_rr.key_name().to_owned());
             }
         }
 
@@ -440,6 +510,7 @@ struct Context<'c, 'b, C> {
     received: Reader<'b>,
     received_info: ReceivedInfo,
     question: Option<Question>,
+    tsig_key: Option<Box<LowercaseName>>,
 
     // Data recorded during processing:
     source_of_synthesis: Option<Cow<'c, Name>>,
@@ -463,6 +534,7 @@ impl<'c, 'b, C> Context<'c, 'b, C> {
             received,
             received_info,
             question: None,
+            tsig_key: None,
             source_of_synthesis: None,
             response,
             rrl_action: None,
@@ -492,6 +564,128 @@ fn validate_opt(opt_rr: &ReadRr) -> Option<ExtendedRcode> {
             None
         }
     }
+}
+
+////////////////////////////////////////////////////////////////////////
+// TSIG RECORD HANDLING                                               //
+////////////////////////////////////////////////////////////////////////
+
+/// The "fudge" value (in seconds) to use in TSIG responses. This is
+/// currently hard-coded to the value recommended by [RFC 8945 § 10].
+///
+/// [RFC 8945 § 10]: https://datatracker.ietf.org/doc/html/rfc8945#section-10
+const TSIG_FUDGE: u16 = 300;
+
+/// Finds the [`Algorithm`] specified by a received TSIG RR. If the
+/// algorithm is not recognized, then a TSIG RR with error BADKEY is
+/// added to the response and the function returns `None`.
+fn find_tsig_algorithm_or_write_error(
+    tsig_rr: &ReadTsigRr,
+    now: TimeSigned,
+    response: &mut Writer,
+) -> Option<Algorithm> {
+    if let Some(algorithm) = Algorithm::from_name(tsig_rr.algorithm()) {
+        Some(algorithm)
+    } else {
+        response.set_rcode(Rcode::NOTAUTH);
+        response
+            .set_tsig(
+                writer::TsigMode::Unsigned {
+                    algorithm: tsig_rr.algorithm().to_owned(),
+                },
+                PreparedTsigRr::new_from_read(tsig_rr, now, TSIG_FUDGE, ExtendedRcode::BADKEY),
+            )
+            .unwrap();
+        None
+    }
+}
+
+/// Finds the TSIG key specified by a received TSIG RR. If the key is
+/// not recognized, then a TSIG RR with error BADKEY is added to the
+/// response and the function returns `None`.
+fn find_tsig_key_or_write_error<'k>(
+    tsig_rr: &ReadTsigRr,
+    now: TimeSigned,
+    response: &mut Writer,
+) -> Option<&'k [u8]> {
+    // TODO: we don't yet implement a TSIG key store, so for now this
+    // step always fails.
+    response.set_rcode(Rcode::NOTAUTH);
+    response
+        .set_tsig(
+            writer::TsigMode::Unsigned {
+                algorithm: tsig_rr.algorithm().to_owned(),
+            },
+            PreparedTsigRr::new_from_read(tsig_rr, now, TSIG_FUDGE, ExtendedRcode::BADKEY),
+        )
+        .unwrap();
+    None
+}
+
+/// Verifies a received message with a TSIG RR. A TSIG RR with the
+/// appropriate RCODE is written to the response. Returns whether
+/// verification was successful.
+///
+/// The algorithm and key should match the ones specified by `tsig_rr`
+/// and should be found with [`find_tsig_algorithm_or_write_error`] and
+/// [`find_tsig_key_or_write_error`], respectively.
+fn verify_tsig_and_write_tsig_rr(
+    tsig_rr: &ReadTsigRr,
+    message_without_tsig: &[u8],
+    algorithm: Algorithm,
+    key: &[u8],
+    now: TimeSigned,
+    response: &mut Writer,
+) -> bool {
+    let (rcode, tsig_err, mode) =
+        match tsig_rr.verify_request(message_without_tsig, algorithm, key, now) {
+            Ok(()) => (
+                Rcode::NOERROR,
+                ExtendedRcode::NOERROR,
+                writer::TsigMode::Response {
+                    request_mac: tsig_rr.mac().into(),
+                    algorithm,
+                    key: key.into(),
+                },
+            ),
+            Err(tsig::VerificationError::BadSig) => (
+                Rcode::NOTAUTH,
+                ExtendedRcode::BADVERSBADSIG,
+                writer::TsigMode::Unsigned {
+                    algorithm: algorithm.name().to_owned(),
+                },
+            ),
+            Err(tsig::VerificationError::BadTime) => (
+                Rcode::NOTAUTH,
+                ExtendedRcode::BADTIME,
+                writer::TsigMode::Response {
+                    request_mac: tsig_rr.mac().into(),
+                    algorithm,
+                    key: key.into(),
+                },
+            ),
+            // The next case occurs when the request MAC does not meet
+            // the minimum length requirements of RFC 8945 § 5.2.2.1.
+            // The RFC says to return FORMERR, but it's not clear what
+            // to do about the TSIG record. We follow BIND and put
+            // BADSIG in the TSIG error field.
+            Err(tsig::VerificationError::FormErr) => (
+                Rcode::FORMERR,
+                ExtendedRcode::BADVERSBADSIG,
+                writer::TsigMode::Unsigned {
+                    algorithm: algorithm.name().to_owned(),
+                },
+            ),
+        };
+
+    response.set_rcode(rcode);
+    response
+        .set_tsig(
+            mode,
+            PreparedTsigRr::new_from_read(tsig_rr, now, TSIG_FUDGE, tsig_err),
+        )
+        .unwrap();
+    rcode == Rcode::NOERROR
 }
 
 ////////////////////////////////////////////////////////////////////////
