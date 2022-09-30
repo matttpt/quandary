@@ -72,7 +72,8 @@ fn try_running(run_args: RunArgs) -> Result<()> {
         (config, reload_source)
     } else {
         info!("Loading the configuration from the command line.");
-        let config = config::load_from_args(run_args);
+        let config =
+            config::load_from_args(run_args).context("failed to load the configuration")?;
         let reload_source = ReloadSource::Args(config.zones.clone());
         (config, reload_source)
     };

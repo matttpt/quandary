@@ -14,7 +14,7 @@
 
 //! Implements the server configuration file.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Write};
 use std::fs;
 use std::io;
@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use log::Level::Debug;
 use log::{debug, log_enabled};
 use paste::paste;
@@ -57,6 +57,11 @@ pub fn load_from_path(path: impl AsRef<Path>, reloading: bool) -> Result<Config>
     let mut config: Config =
         toml::from_slice(&raw_config).context("failed to parse the configuration file")?;
 
+    // Fail if a zone is configured more than once.
+    if let Some((name, class)) = find_duplicated_zone(&config.zones) {
+        bail!("the zone {name}/{class} is configured more than once");
+    }
+
     // When loading the configuration from a path, all zone file paths
     // are interpreted relative to the configuration file's directory.
     for zone_config in &mut config.zones {
@@ -75,31 +80,50 @@ pub fn load_from_path(path: impl AsRef<Path>, reloading: bool) -> Result<Config>
 
 /// Loads the server configuration from the parsed command line
 /// arguments given by `args`.
-pub fn load_from_args(args: RunArgs) -> Config {
+pub fn load_from_args(args: RunArgs) -> Result<Config> {
     let bind = args.bind.unwrap_or_else(|| {
         let ip = args.ip.unwrap_or(DEFAULT_BIND_IP);
         let port = args.port.unwrap_or(DEFAULT_BIND_PORT);
         SocketAddr::new(ip, port)
     });
+    let zones: Vec<_> = args
+        .zones
+        .into_iter()
+        .map(|zd| ZoneConfig {
+            name: ConfigName(zd.name),
+            class: default_zone_class(),
+            glue_policy: default_glue_policy(),
+            path: zd.path,
+        })
+        .collect();
+
+    // Fail if a zone is configured more than once.
+    if let Some((name, class)) = find_duplicated_zone(&zones) {
+        bail!("the zone {name}/{class} is configured more than once");
+    }
 
     let config = Config {
         bind,
         io: default_io_provider_config(),
         server: None,
         tsig_keys: HashMap::new(),
-        zones: args
-            .zones
-            .into_iter()
-            .map(|zd| ZoneConfig {
-                name: ConfigName(zd.name),
-                class: default_zone_class(),
-                glue_policy: default_glue_policy(),
-                path: zd.path,
-            })
-            .collect(),
+        zones,
     };
     log_config_summary(&config);
-    config
+    Ok(config)
+}
+
+/// Tries to find a duplicated zone (i.e., a name/class combination that
+/// is configured more than once) in the configuration.
+fn find_duplicated_zone(zones: &[ZoneConfig]) -> Option<(&Name, Class)> {
+    let mut zone_set = HashSet::new();
+    for zone in zones {
+        let pair = (zone.name.0.as_ref(), zone.class.0);
+        if !zone_set.insert(pair) {
+            return Some(pair);
+        }
+    }
+    None
 }
 
 /// Summarizes the configuration in the log, if the debug log level is
