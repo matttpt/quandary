@@ -170,23 +170,30 @@ glue_policy = "narrow"              # See draft-koch-dns-glue-clarifications-05.
 path        = "quandary.test.zone"  # Required. Relative paths are
                                     # interpreted relative to the
                                     # configuration file.
+
+# The tsig_keys table configures TSIG keys recognized by the server.
+[tsig_keys."domain.name.of.tsig.key."]
+algorithm = "hmac-sha256"       # Required; supports hmac-sha1 and hmac-sha256.
+secret    = "EncodedInBase64="  # Required.
 ```
 
 ### Reloading
 
-The Quandary daemon reloads its data when it receives SIGHUP. When
-configured with a configuration file, the configuration file is first
-reread to update the list of zones to serve; zones are then loaded,
+The Quandary daemon reloads its data (zones and TSIG keys) when it
+receives SIGHUP. When configured with a configuration file, the
+configuration file is first reread to update the list of zones to serve
+and the TSIG keys to recognize; zones and keys are then loaded,
 reloaded, and dropped as required. When configured from the command
 line, the configured zones are reloaded, but the list of zones to serve
-cannot be changed without a full restart.
+cannot be changed without a full restart. (TSIG keys cannot be
+configured from the command line.)
 
 On systems that support it, Quandary checks the modification time of the
 configured zone files and does not reload them if they have not changed.
 
 Note that SIGHUP triggers only a data reload. Changes to the
-configuration file outside of the `zones` array are not applied without
-a full restart.
+configuration file outside of the `zones` array and the `tsig_keys`
+table are not applied without a full restart.
 
 ### Logging
 

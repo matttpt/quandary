@@ -14,6 +14,7 @@
 
 //! Implements the server configuration file.
 
+use std::collections::HashMap;
 use std::fmt::{self, Write};
 use std::fs;
 use std::io;
@@ -30,6 +31,7 @@ use serde::{de, Deserialize};
 
 use quandary::class::Class;
 use quandary::db::zone::GluePolicy;
+use quandary::message::tsig::Algorithm;
 use quandary::name::Name;
 use quandary::thread::{self, ThreadGroup};
 
@@ -43,9 +45,9 @@ use crate::run::Server;
 /// Loads the server configuration from the file given by `path`.
 ///
 /// The `reloading` parameter controls how the configuration is
-/// summarized in the log: if reloading, only the zone configuration
-/// (the only thing that we support reloading) is summarized. This
-/// parameter does *not* otherwise affect processing.
+/// summarized in the log: if reloading, only the zone and key
+/// configurations (the only things that we support reloading) are
+/// summarized. This parameter does *not* otherwise affect processing.
 pub fn load_from_path(path: impl AsRef<Path>, reloading: bool) -> Result<Config> {
     let dir = match path.as_ref().parent() {
         Some(p) => p,
@@ -64,7 +66,7 @@ pub fn load_from_path(path: impl AsRef<Path>, reloading: bool) -> Result<Config>
     }
 
     if reloading {
-        log_zone_summary(&config.zones);
+        log_zone_and_key_summary(&config);
     } else {
         log_config_summary(&config);
     }
@@ -84,6 +86,7 @@ pub fn load_from_args(args: RunArgs) -> Config {
         bind,
         io: default_io_provider_config(),
         server: None,
+        tsig_keys: HashMap::new(),
         zones: args
             .zones
             .into_iter()
@@ -129,21 +132,25 @@ fn log_config_summary(config: &Config) {
         rrl_status,
     );
     summarize_zones(&config.zones, &mut message);
+    message.write_str("\nTSIG keys:    ").unwrap();
+    summarize_keys(&config.tsig_keys, &mut message);
     debug!("{}", message);
 }
 
-/// Summarizes only the zones in the log, if the debug log level is
-/// enabled. Used when reloading.
-fn log_zone_summary(zones: &[ZoneConfig]) {
+/// Summarizes only the zones and TSIG keys in the log, if the debug log
+/// level is enabled. Used when reloading.
+fn log_zone_and_key_summary(config: &Config) {
     if log_enabled!(Debug) {
-        let mut message = String::from("Catalog reloaded:\nZones: ");
-        summarize_zones(zones, &mut message);
+        let mut message = String::from("Zones and keys reloaded:\nZones: ");
+        summarize_zones(&config.zones, &mut message);
+        message.push_str("\nTSIG keys: ");
+        summarize_keys(&config.tsig_keys, &mut message);
         debug!("{}", message);
     }
 }
 
 /// Produces the zone summary for [`log_config_summary`] and
-/// [`log_zone_summary`].
+/// [`log_zone_and_key_summary`].
 fn summarize_zones(zones: &[ZoneConfig], message: &mut String) {
     if zones.is_empty() {
         message.push_str("none to load");
@@ -156,6 +163,24 @@ fn summarize_zones(zones: &[ZoneConfig], message: &mut String) {
                 zone_config.name.0, zone_config.class.0,
             )
             .unwrap();
+        }
+    }
+}
+
+/// Produces the TSIG key summary for [`log_config_summary`] and
+/// [`log_zone_and_key_summary`].
+fn summarize_keys(tsig_keys: &HashMap<Box<ConfigName>, TsigKeyConfig>, message: &mut String) {
+    if tsig_keys.is_empty() {
+        message.push_str("none");
+    } else {
+        write!(message, "{} configured", tsig_keys.len()).unwrap();
+        let mut names_and_algorithms: Vec<_> = tsig_keys
+            .iter()
+            .map(|(name, config)| (&*name.0, config.algorithm))
+            .collect();
+        names_and_algorithms.sort_unstable_by_key(|&(name, _)| name);
+        for (name, algorithm) in names_and_algorithms {
+            write!(message, "\n  {} ({})", name, algorithm).unwrap();
         }
     }
 }
@@ -173,6 +198,8 @@ pub struct Config {
     #[serde(default = "default_io_provider_config")]
     pub io: IoProviderConfig,
     pub server: Option<ServerConfig>,
+    #[serde(default)]
+    pub tsig_keys: HashMap<Box<ConfigName>, TsigKeyConfig>,
     pub zones: Vec<ZoneConfig>,
 }
 
@@ -335,6 +362,56 @@ pub struct RrlConfig {
 }
 
 ////////////////////////////////////////////////////////////////////////
+// CONFIGURATION SECTION: TSIG KEYS                                   //
+////////////////////////////////////////////////////////////////////////
+
+/// The configuration for a single TSIG key.
+#[derive(Clone, Debug, Deserialize)]
+pub struct TsigKeyConfig {
+    pub algorithm: ConfigAlgorithm,
+    #[serde(deserialize_with = "deserialize_secret")]
+    pub secret: Box<[u8]>,
+}
+
+/// A deserializable wrapper over the
+/// [`quandary::message::tsig::Algorithm`] type.
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub enum ConfigAlgorithm {
+    #[serde(rename = "hmac-sha1")]
+    HmacSha1,
+    #[serde(rename = "hmac-sha256")]
+    HmacSha256,
+}
+
+impl From<ConfigAlgorithm> for Algorithm {
+    fn from(config_algorithm: ConfigAlgorithm) -> Self {
+        match config_algorithm {
+            ConfigAlgorithm::HmacSha1 => Self::HmacSha1,
+            ConfigAlgorithm::HmacSha256 => Self::HmacSha256,
+        }
+    }
+}
+
+impl fmt::Display for ConfigAlgorithm {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::HmacSha1 => f.write_str("hmac-sha1"),
+            Self::HmacSha256 => f.write_str("hmac-sha256"),
+        }
+    }
+}
+
+fn deserialize_secret<'de, D>(deserializer: D) -> Result<Box<[u8]>, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    let raw = <&str>::deserialize(deserializer)?;
+    base64::decode(raw)
+        .map(Vec::into_boxed_slice)
+        .map_err(|_| de::Error::custom("invalid base-64 encoding"))
+}
+
+////////////////////////////////////////////////////////////////////////
 // CONFIGURATION SECTION: ZONES                                       //
 ////////////////////////////////////////////////////////////////////////
 
@@ -388,7 +465,7 @@ macro_rules! make_serde_wrapper {
     ($wrapper:ident, $over:ty, $description:literal) => {
         /// A macro-generated deserializable wrapper over a [`quandary`]
         /// type.
-        #[derive(Clone, Debug)]
+        #[derive(Clone, Debug, Eq, Hash, PartialEq)]
         pub struct $wrapper(pub $over);
 
         impl<'de> Deserialize<'de> for $wrapper {

@@ -14,6 +14,7 @@
 
 //! Implements the `run` command (i.e., running the server).
 
+use std::collections::HashMap;
 use std::fmt::Write;
 use std::path::Path;
 use std::process;
@@ -27,11 +28,11 @@ use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 
 use quandary::io::socket::SUPPORTS_LOCAL_ADDRESS_SELECTION;
-use quandary::server::RrlParams;
+use quandary::server::{RrlParams, TsigKeyMap};
 use quandary::thread::ThreadGroup;
 
 use crate::args::RunArgs;
-use crate::config::{self, RrlConfig, ServerConfig, ZoneConfig};
+use crate::config::{self, ConfigName, RrlConfig, ServerConfig, TsigKeyConfig, ZoneConfig};
 use crate::zones::{self, Catalog};
 
 /// The specific [`Server`](quandary::server::Server) type we use.
@@ -63,17 +64,17 @@ fn try_running(run_args: RunArgs) -> Result<()> {
 
     // Get the configuration, either from the file system or from the
     // command line arguments, as appropriate.
-    let (config, zone_reload_source) = if let Some(ref config_path) = run_args.config {
+    let (config, reload_source) = if let Some(ref config_path) = run_args.config {
         info!("Loading the configuration from {}.", config_path.display());
         let config = config::load_from_path(config_path, false)
             .context("failed to load the configuration")?;
-        let zone_reload_source = ZoneReloadSource::Config(config_path.as_path());
-        (config, zone_reload_source)
+        let reload_source = ReloadSource::Config(config_path.as_path());
+        (config, reload_source)
     } else {
         info!("Loading the configuration from the command line.");
         let config = config::load_from_args(run_args);
-        let zone_reload_source = ZoneReloadSource::Args(config.zones.clone());
-        (config, zone_reload_source)
+        let reload_source = ReloadSource::Args(config.zones.clone());
+        (config, reload_source)
     };
 
     // Before we bind, warn if we don't have local address selection but
@@ -109,6 +110,9 @@ fn try_running(run_args: RunArgs) -> Result<()> {
     let mut catalog = Arc::new(zones::load(config.zones));
     server.set_catalog(catalog.clone());
 
+    // Load any configured TSIG keys.
+    server.set_tsig_keys(make_tsig_key_map(config.tsig_keys));
+
     // Set up signal handling.
     let mut signals = set_up_signal_handling().context("failed to set up signal handling")?;
 
@@ -134,11 +138,11 @@ fn try_running(run_args: RunArgs) -> Result<()> {
                 break;
             }
             SIGHUP => {
-                info!("Received SIGHUP; reloading zones.");
-                match reload_zones(&zone_reload_source, &server, &catalog) {
+                info!("Received SIGHUP; reloading zones and keys.");
+                match reload_zones_and_keys(&reload_source, &server, &catalog) {
                     Ok(new_catalog) => catalog = new_catalog,
                     Err(e) => {
-                        let mut message = String::from("Failed to reload zones:");
+                        let mut message = String::from("Failed to reload zones and keys:");
                         for (i, cause) in e.chain().enumerate() {
                             write!(message, "\n[{}] {}", i + 1, cause).unwrap();
                         }
@@ -198,6 +202,15 @@ fn configure_rrl(server: &mut Server, config: &RrlConfig) -> Result<()> {
     Ok(())
 }
 
+fn make_tsig_key_map(tsig_keys: HashMap<Box<ConfigName>, TsigKeyConfig>) -> Arc<TsigKeyMap> {
+    Arc::new(
+        tsig_keys
+            .into_iter()
+            .map(|(name, config)| (name.0, (config.algorithm.into(), config.secret)))
+            .collect(),
+    )
+}
+
 fn set_up_signal_handling() -> Result<Signals> {
     let all_signals = &[SIGHUP, SIGINT, SIGTERM];
     let term_signals = &[SIGINT, SIGTERM];
@@ -214,25 +227,27 @@ fn set_up_signal_handling() -> Result<Signals> {
     Signals::new(all_signals).map_err(|e| e.into())
 }
 
-enum ZoneReloadSource<'a> {
+enum ReloadSource<'a> {
     Args(Vec<ZoneConfig>),
     Config(&'a Path),
 }
 
-fn reload_zones(
-    zone_reload_source: &ZoneReloadSource,
+fn reload_zones_and_keys(
+    reload_source: &ReloadSource,
     server: &Server,
     catalog: &Catalog,
 ) -> Result<Arc<Catalog>> {
-    let zone_configs = match zone_reload_source {
-        ZoneReloadSource::Args(zone_configs) => zone_configs.clone(),
-        ZoneReloadSource::Config(path) => {
+    let (zone_configs, tsig_keys) = match reload_source {
+        ReloadSource::Args(zone_configs) => (zone_configs.clone(), HashMap::new()),
+        ReloadSource::Config(path) => {
             let config =
                 config::load_from_path(path, true).context("failed to reload the configuration")?;
-            config.zones
+            (config.zones, config.tsig_keys)
         }
     };
     let new_catalog = Arc::new(zones::reload(zone_configs, catalog));
+    let new_tsig_key_map = make_tsig_key_map(tsig_keys);
     server.set_catalog(new_catalog.clone());
+    server.set_tsig_keys(new_tsig_key_map);
     Ok(new_catalog)
 }

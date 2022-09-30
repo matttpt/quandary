@@ -19,6 +19,7 @@ binary = [
     "dep:clap",
     "dep:env_logger",
     "dep:paste",
+    "dep:base64",
     "dep:serde",
     "dep:signal-hook",
     "dep:toml",
@@ -36,6 +37,7 @@ slab = "0.4"
 
 # Optional dependencies for the binary:
 anyhow = { version = "1.0", optional = true }
+base64 = { version = "0.13", optional = true }
 clap = { version = "4", optional = true, features = ["derive"] }
 env_logger = { version = "0.9", optional = true }
 paste = { version = "1.0", optional = true }
