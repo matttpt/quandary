@@ -31,9 +31,9 @@ pub fn parse() -> Args {
 
 /// The Quandary authoritative DNS server
 #[derive(Debug, Parser)]
-#[clap(author, version)]
+#[command(version)]
 pub struct Args {
-    #[clap(subcommand)]
+    #[command(subcommand)]
     pub command: Command,
 }
 
@@ -44,32 +44,26 @@ pub enum Command {
 }
 
 #[derive(Debug, Parser)]
-#[clap(group(ArgGroup::new("required").required(true).args(&["config", "zones"])))]
+#[command(group(ArgGroup::new("required").required(true).args(["config", "zones"])))]
 pub struct RunArgs {
     /// Set the configuration file to use
-    #[clap(long, conflicts_with_all=&["bind", "ip", "port"], value_name = "FILE")]
+    #[arg(long, conflicts_with_all=["bind", "ip", "port"], value_name = "FILE")]
     pub config: Option<PathBuf>,
 
     /// Set the server bind IP address and port
-    #[clap(long, value_name = "IP:PORT")]
+    #[arg(long, value_name = "IP:PORT")]
     pub bind: Option<SocketAddr>,
 
     /// Set the server bind IP address
-    #[clap(long, conflicts_with = "bind", value_name = "IP")]
+    #[arg(long, conflicts_with = "bind", value_name = "IP")]
     pub ip: Option<IpAddr>,
 
     /// Set the server port
-    #[clap(long, conflicts_with = "bind", value_name = "PORT")]
+    #[arg(long, conflicts_with = "bind", value_name = "PORT")]
     pub port: Option<u16>,
 
     /// Add zones to serve
-    #[clap(
-        long,
-        multiple_values = true,
-        use_value_delimiter = true,
-        value_name = "FILE|NAME:FILE",
-        value_parser
-    )]
+    #[arg(long, num_args = 1.., value_delimiter = ',', value_name = "FILE|NAME:FILE")]
     pub zones: Vec<ZoneDescription>,
 }
 
@@ -121,7 +115,15 @@ impl FromStr for ZoneDescription {
 
 #[cfg(test)]
 mod tests {
+    use clap::CommandFactory;
+
     use super::*;
+
+    // This test is recommended by Clap's documentation.
+    #[test]
+    fn check_args() {
+        Args::command().debug_assert();
+    }
 
     #[test]
     fn zone_description_from_str_computes_zone_name_from_path_correctly() {
