@@ -225,7 +225,7 @@ fn set_up_signal_handling() -> Result<Signals> {
         signal_hook::flag::register(*sig, already_terminating.clone())?;
     }
 
-    Signals::new(all_signals).map_err(|e| e.into())
+    Signals::new(all_signals).map_err(Into::into)
 }
 
 enum ReloadSource<'a> {

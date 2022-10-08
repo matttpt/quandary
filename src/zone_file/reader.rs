@@ -304,7 +304,7 @@ impl<S: Read> Reader<S> {
     /// Note that when computing the change in the line/column position,
     /// this method assumes that the read data contains no newlines.
     pub fn expect_field(&mut self, field: &[u8]) -> io::Result<bool> {
-        self.expect_field_impl(field, |a, b| a == b)
+        self.expect_field_impl(field, <[u8]>::eq)
     }
 
     /// Checks whether the next field in the stream is
@@ -314,7 +314,7 @@ impl<S: Read> Reader<S> {
     /// Note that when computing the change in the line/column position,
     /// this method assumes that the read data contains no newlines.
     pub fn expect_field_case_insensitive(&mut self, field: &[u8]) -> io::Result<bool> {
-        self.expect_field_impl(field, |a, b| a.eq_ignore_ascii_case(b))
+        self.expect_field_impl(field, <[u8]>::eq_ignore_ascii_case)
     }
 
     /// Consumes a field from the stream, converting it to UTF-8 and

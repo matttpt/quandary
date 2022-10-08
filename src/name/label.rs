@@ -235,7 +235,7 @@ impl Hash for Label {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // We have to hash in a case-insensitive manner to match our
         // implementations of [`PartialEq`] and [`Eq`].
-        for octet in self.octets().iter().map(|octet| octet.to_ascii_lowercase()) {
+        for octet in self.octets().iter().map(u8::to_ascii_lowercase) {
             state.write_u8(octet);
         }
     }
