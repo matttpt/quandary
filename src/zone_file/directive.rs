@@ -149,7 +149,7 @@ impl<S: Read> Parser<S> {
 
 /// The maximum length of a path in an `$INCLUDE` directive. This is
 /// used to prevent OOM-based DoS attacks. The current value should be
-/// longer than any reasonable path seen in the wild (indeed, PATH_MAX
+/// longer than any reasonable path seen in the wild (indeed, `PATH_MAX`
 /// on Linux is only 4,096!).
 const INCLUDE_PATH_MAX: usize = 65_536;
 

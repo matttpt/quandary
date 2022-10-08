@@ -280,7 +280,7 @@ impl IoProviderConfig {
 }
 
 /// Support for the
-/// [`BlockingIoProvider](quandary::io::BlockingIoProvider).
+/// [`BlockingIoProvider`](quandary::io::BlockingIoProvider).
 mod blocking_io {
     use super::*;
     use quandary::io::{BlockingIoConfig, BlockingIoProvider};

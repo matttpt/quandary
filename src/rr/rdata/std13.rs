@@ -497,7 +497,7 @@ impl Rdata {
 /// A helper to serialize DNS TXT records.
 ///
 /// [RFC 1035 § 3.3.14] defines the TXT RDATA format as one or more
-/// `<character-string>`s (see [CharacterString]). This helper allows
+/// `<character-string>`s (see [`CharacterString`]). This helper allows
 /// one to serialize a TXT RDATA by inputting `<character-string>`s
 /// one by one using the [`TxtBuilder::try_push`] method. The
 /// `<character-string>`s are written out to the buffer provided to
