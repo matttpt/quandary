@@ -233,8 +233,13 @@ impl Ord for Label {
 
 impl Hash for Label {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // We have to hash in a case-insensitive manner to match our
-        // implementations of [`PartialEq`] and [`Eq`].
+        // We add the wire representation of the label in lowercase
+        // form to the hasher. This keeps the Hash implementation
+        // case-insensitive to match our implementations of Eq and
+        // PartialEq. Furthermore, by including the length octet, we
+        // prevent the hash of two labels added consecutively from
+        // equaling the hash of their concatenation.
+        state.write_u8(self.octets().len() as u8);
         for octet in self.octets().iter().map(u8::to_ascii_lowercase) {
             state.write_u8(octet);
         }
