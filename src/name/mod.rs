@@ -386,7 +386,7 @@ impl Name {
     /// The mutable version of [`Name::wire_repr`] for internal use. All
     /// (internal) users must be sure to keep the label count and label
     /// offsets in sync with any modifications made.
-    pub fn wire_repr_mut(&mut self) -> &mut [u8] {
+    fn wire_repr_mut(&mut self) -> &mut [u8] {
         let len = self.len();
         &mut self.data[len..]
     }
