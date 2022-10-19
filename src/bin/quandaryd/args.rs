@@ -85,22 +85,39 @@ impl FromStr for ZoneDescription {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Handle the zone name and zone-file path specified separately.
         if let Some((name, path)) = s.split_once(':') {
-            Ok(Self {
+            return Ok(Self {
                 name: name
                     .parse()
                     .map_err(|e| anyhow!("invalid zone name: {}", e))?,
                 path: PathBuf::from(path),
-            })
-        } else if s.ends_with(".zone") {
-            if let Some(zone_name_without_trailing_dot) =
-                Path::new(s).file_stem().and_then(OsStr::to_str)
-            {
+            });
+        }
+
+        // Path::extension does not return any extension when the only
+        // '.' is at the beginning of the file name, so this case must
+        // be handled separately.
+        if s.eq_ignore_ascii_case(".zone") {
+            return Ok(Self {
+                name: Name::root().to_owned(),
+                path: PathBuf::from(s),
+            });
+        }
+
+        // The only remaining option is a non-root zone where the zone
+        // file name provides the zone name.
+        let path = Path::new(s);
+        if path
+            .extension()
+            .map_or(false, |e| e.eq_ignore_ascii_case("zone"))
+        {
+            if let Some(zone_name_without_trailing_dot) = path.file_stem().and_then(OsStr::to_str) {
                 Ok(Self {
                     name: format!("{}.", zone_name_without_trailing_dot)
                         .parse()
                         .map_err(|e| anyhow!("invalid zone name: {}", e))?,
-                    path: PathBuf::from(s),
+                    path: path.to_owned(),
                 })
             } else {
                 Err(anyhow!("failed to compute zone name from zone file path"))
@@ -130,6 +147,20 @@ mod tests {
         let path =
             PathBuf::from_iter(["path_to", "a", "..", "zone_file", ".", "quandary.test.zone"]);
         let description: ZoneDescription = path.to_str().unwrap().parse().unwrap();
+        assert_eq!(description.name, "quandary.test.".parse().unwrap());
+    }
+
+    #[test]
+    fn zone_description_from_str_interprets_root_correctly() {
+        let description: ZoneDescription = ".zone".parse().unwrap();
+        assert!(description.name.is_root());
+        let description: ZoneDescription = ".zOnE".parse().unwrap();
+        assert!(description.name.is_root());
+    }
+
+    #[test]
+    fn zone_description_from_str_treats_extension_case_insensitively() {
+        let description: ZoneDescription = "quandary.test.zOnE".parse().unwrap();
         assert_eq!(description.name, "quandary.test.".parse().unwrap());
     }
 }
