@@ -328,6 +328,26 @@ impl<'a> Writer<'a> {
         }
     }
 
+    /// Returns the current number of questions in the message.
+    pub fn qdcount(&self) -> u16 {
+        self.qdcount
+    }
+
+    /// Returns the current number of answer RRs in the message.
+    pub fn ancount(&self) -> u16 {
+        self.ancount
+    }
+
+    /// Returns the current number of authority RRs in the message.
+    pub fn nscount(&self) -> u16 {
+        self.nscount
+    }
+
+    /// Returns the current number of additional RRs in the message.
+    pub fn arcount(&self) -> u16 {
+        self.arcount
+    }
+
     /// Adds a question to message. This must be used before any
     /// resource records are added.
     pub fn add_question(&mut self, question: &Question) -> Result<()> {
