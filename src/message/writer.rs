@@ -658,7 +658,13 @@ impl<'a> Writer<'a> {
 
     /// Finishes writing the message. The final length of the message
     /// is returned.
-    pub fn finish(mut self) -> usize {
+    pub fn finish(self) -> usize {
+        self.finish_with_mac().0
+    }
+
+    /// Finishes writing the message, returning its final length and
+    /// its TSIG MAC (if the message was signed).
+    pub fn finish_with_mac(mut self) -> (usize, Option<Box<[u8]>>) {
         self.write_u16(QDCOUNT_START, self.qdcount);
         self.write_u16(ANCOUNT_START, self.ancount);
         self.write_u16(NSCOUNT_START, self.nscount);
@@ -688,31 +694,30 @@ impl<'a> Writer<'a> {
             .unwrap();
         }
 
-        if let Some(tsig) = self.tsig.take() {
+        let mac = if let Some(tsig) = self.tsig.take() {
             let message = &self.octets[0..self.cursor];
-            let rdata = match &tsig.mode {
+            let (rdata, mac) = match &tsig.mode {
                 TsigMode::Request { algorithm, key } => {
-                    tsig.rr.sign_request(message, *algorithm, key).0
+                    let (rdata, mac) = tsig.rr.sign_request(message, *algorithm, key);
+                    (rdata, Some(mac))
                 }
                 TsigMode::Response {
                     request_mac,
                     algorithm,
                     key,
                 } => {
-                    tsig.rr
-                        .sign_response(message, request_mac, *algorithm, key)
-                        .0
+                    let (rdata, mac) = tsig.rr.sign_response(message, request_mac, *algorithm, key);
+                    (rdata, Some(mac))
                 }
                 TsigMode::Subsequent {
                     prior_mac,
                     algorithm,
                     key,
                 } => {
-                    tsig.rr
-                        .sign_subsequent(message, prior_mac, *algorithm, key)
-                        .0
+                    let (rdata, mac) = tsig.rr.sign_subsequent(message, prior_mac, *algorithm, key);
+                    (rdata, Some(mac))
                 }
-                TsigMode::Unsigned { algorithm } => tsig.rr.unsigned(algorithm),
+                TsigMode::Unsigned { algorithm } => (tsig.rr.unsigned(algorithm), None),
             };
             self.available += tsig.reserved_len;
             self.add_rr(
@@ -723,8 +728,12 @@ impl<'a> Writer<'a> {
                 &rdata,
             )
             .unwrap();
-        }
-        self.cursor
+            mac
+        } else {
+            None
+        };
+
+        (self.cursor, mac)
     }
 
     /// Executes `f(self)`, returning the result and rolling back the
