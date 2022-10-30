@@ -385,6 +385,36 @@ impl ReadTsigRr<'_> {
         self.verification_core(add_data_to_mac, algorithm, key, now)
     }
 
+    /// Verifies the given subsequent message in a multi-message
+    /// response.
+    ///
+    /// The passed buffer should be the message up to—but not
+    /// including—the TSIG RR. It must be a valid DNS message.
+    /// Furthermore, the algorithm provided must match the algorithm
+    /// name in the RR. Finally, the prior MAC must fit in the TSIG
+    /// MAC field (i.e., it must be no more than 65,535 octets long).
+    /// Failure to uphold these preconditions may result in a panic.
+    ///
+    /// However, it is not required to decrement the message ARCOUNT or
+    /// to reset its message ID to the original ID in the TSIG RR. This
+    /// method does this for you.
+    pub fn verify_subsequent(
+        &self,
+        message: &[u8],
+        prior_mac: &[u8],
+        algorithm: Algorithm,
+        key: &[u8],
+        now: TimeSigned,
+    ) -> Result<(), VerificationError> {
+        let add_data_to_mac = |authenticator: &mut dyn Authenticator| {
+            authenticator.update(&(prior_mac.len() as u16).to_be_bytes());
+            authenticator.update(prior_mac);
+            add_modified_message(authenticator, message, self.original_id());
+            add_tsig_timers(authenticator, self);
+        };
+        self.verification_core(add_data_to_mac, algorithm, key, now)
+    }
+
     /// The internal core implementation of TSIG message verification.
     fn verification_core<F>(
         &self,
@@ -639,6 +669,37 @@ impl PreparedTsigRr {
         (self.serialize_rdata(algorithm.name(), &mac), mac)
     }
 
+    /// Signs the given subsequent message in a multi-message response,
+    /// returning TSIG [`Rdata`] with the computed MAC.
+    ///
+    /// The passed buffer should be the message up to—but not
+    /// including—the TSIG RR. It must be a valid DNS message (once the
+    /// TSIG RR is appended). Furthermore, the prior message's MAC must
+    /// be a valid TSIG MAC (i.e., it must be no more than 65,535 octets
+    /// long). Failure to uphold these preconditions may result in a
+    /// panic.
+    ///
+    /// Note that the message's ID and ARCOUNT should be set to their
+    /// final values (i.e. for the latter, including the TSIG RR); this
+    /// method takes care of adjusting these fields as appropriate when
+    /// computing the MAC.
+    pub fn sign_subsequent(
+        &self,
+        message: &[u8],
+        prior_mac: &[u8],
+        algorithm: Algorithm,
+        key: &[u8],
+    ) -> (Box<Rdata>, Box<[u8]>) {
+        assert!(prior_mac.len() <= u16::MAX as usize);
+        let mut authenticator = algorithm.make_authenticator(key);
+        authenticator.update(&(prior_mac.len() as u16).to_be_bytes());
+        authenticator.update(prior_mac);
+        add_modified_message(authenticator.as_mut(), message, self.original_id);
+        add_tsig_timers(authenticator.as_mut(), &(algorithm.name(), self));
+        let mac = authenticator.finalize();
+        (self.serialize_rdata(algorithm.name(), &mac), mac)
+    }
+
     /// Serializes TSIG [`Rdata`] using the provided algorithm name and
     /// leaving the record unsigned (i.e., with a zero-length MAC).
     pub fn unsigned(&self, algorithm: &LowercaseName) -> Box<Rdata> {
@@ -789,10 +850,21 @@ mod tests {
           \x00\x20\xb9\x7f\x50\x3b\xd0\x93\x4d\xcf\x84\xf5\xf4\x89\xb5\xed\
           \xde\x52\x7d\x28\x28\x32\xd5\xe1\xd8\x3c\x0a\xb2\x43\xb6\x43\x9f\
           \xc2\x56\xa2\xe0\x00\x00\x00\x00";
+    const SUBSEQUENT_WITH_TSIG: &[u8] =
+        b"\xa2\xe0\x84\x00\x00\x01\x00\x01\x00\x00\x00\x01\x08\x71\x75\x61\
+          \x6e\x64\x61\x72\x79\x04\x74\x65\x73\x74\x00\x00\x10\x00\x01\xc0\
+          \x0c\x00\x10\x00\x01\x00\x01\x51\x80\x00\x0a\x09\x49\x74\x20\x77\
+          \x6f\x72\x6b\x73\x21\x01\x61\x04\x74\x73\x69\x67\x03\x6b\x65\x79\
+          \x00\x00\xfa\x00\xff\x00\x00\x00\x00\x00\x3d\x0b\x68\x6d\x61\x63\
+          \x2d\x73\x68\x61\x32\x35\x36\x00\x00\x00\x63\x2b\x8d\xca\x01\x2c\
+          \x00\x20\x6a\xf9\x43\x43\x70\x3b\x71\x8b\xf5\x36\xfa\x77\x4c\x23\
+          \x1f\x9b\xea\x56\x41\x7f\xa7\x17\x22\xd3\x07\x17\x25\x93\x6b\x2d\
+          \xd1\xc3\xa2\xe0\x00\x00\x00\x00";
 
     const MESSAGE_ID: u16 = 0xa2e0;
     const FUDGE: u16 = 300;
     const KEY: &[u8] = b"topsecret";
+    const PRIOR_MAC: &[u8] = &[0; 32];
 
     lazy_static! {
         static ref CORRUPTED_REQUEST_WITH_TSIG: Box<[u8]> = {
@@ -802,6 +874,11 @@ mod tests {
         };
         static ref CORRUPTED_RESPONSE_WITH_TSIG: Box<[u8]> = {
             let mut corrupted: Box<[u8]> = RESPONSE_WITH_TSIG.into();
+            corrupted[2] = 0xff;
+            corrupted
+        };
+        static ref CORRUPTED_SUBSEQUENT_WITH_TSIG: Box<[u8]> = {
+            let mut corrupted: Box<[u8]> = SUBSEQUENT_WITH_TSIG.into();
             corrupted[2] = 0xff;
             corrupted
         };
@@ -847,6 +924,14 @@ mod tests {
 
     fn read_corrupted_response() -> (&'static [u8], ReadTsigRr<'static>) {
         read_message(&CORRUPTED_RESPONSE_WITH_TSIG, 1)
+    }
+
+    fn read_subsequent() -> (&'static [u8], ReadTsigRr<'static>) {
+        read_message(SUBSEQUENT_WITH_TSIG, 1)
+    }
+
+    fn read_corrupted_subsequent() -> (&'static [u8], ReadTsigRr<'static>) {
+        read_message(&CORRUPTED_SUBSEQUENT_WITH_TSIG, 1)
     }
 
     ////////////////////////////////////////////////////////////////////
@@ -943,6 +1028,48 @@ mod tests {
         response_verification_helper(*TOO_EARLY, false, Err(VerificationError::BadTime));
     }
 
+    fn subsequent_verification_helper(
+        now: TimeSigned,
+        corrupted: bool,
+        expected: Result<(), VerificationError>,
+    ) {
+        let (message_up_to_tsig, tsig_rr) = if corrupted {
+            read_corrupted_subsequent()
+        } else {
+            read_subsequent()
+        };
+        assert_eq!(
+            tsig_rr.verify_subsequent(
+                message_up_to_tsig,
+                PRIOR_MAC,
+                Algorithm::HmacSha256,
+                KEY,
+                now
+            ),
+            expected,
+        );
+    }
+
+    #[test]
+    fn subsequent_verification_works() {
+        subsequent_verification_helper(*TIME_SIGNED, false, Ok(()));
+    }
+
+    #[test]
+    fn subsequent_verification_rejects_corrupted_message() {
+        subsequent_verification_helper(*TIME_SIGNED, true, Err(VerificationError::BadSig));
+    }
+
+    #[test]
+    fn subsequent_verification_rejects_late_message() {
+        subsequent_verification_helper(*TOO_LATE, false, Err(VerificationError::BadTime));
+    }
+
+    #[test]
+    fn subsequent_verification_rejects_early_message() {
+        subsequent_verification_helper(*TOO_EARLY, false, Err(VerificationError::BadTime));
+    }
+
     ////////////////////////////////////////////////////////////////////
     // TSIG WRITING/SIGNING TESTS                                     //
     ////////////////////////////////////////////////////////////////////
@@ -1002,5 +1129,39 @@ mod tests {
         writer.set_tsig(tsig_mode, tsig_rr).unwrap();
         let len = writer.finish();
         assert_eq!(RESPONSE_WITH_TSIG, &buf[0..len]);
+    }
+
+    #[test]
+    fn subsequent_signing_works() {
+        let (_, request_tsig) = read_request();
+        let mut buf = [0; 512];
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        writer.set_id(MESSAGE_ID);
+        writer.set_qr(true);
+        writer.set_aa(true);
+        writer.add_question(&QUESTION).unwrap();
+        writer
+            .add_answer_rr(
+                HintedName::new(Hint::Qname, &QUESTION.qname),
+                QUESTION.qtype.into(),
+                QUESTION.qclass.into(),
+                Ttl::from(86400),
+                b"\x09It works!".try_into().unwrap(),
+            )
+            .unwrap();
+        let tsig_mode = TsigMode::Subsequent {
+            prior_mac: PRIOR_MAC.into(),
+            algorithm: Algorithm::HmacSha256,
+            key: KEY.into(),
+        };
+        let tsig_rr = PreparedTsigRr::new_from_read(
+            &request_tsig,
+            *TIME_SIGNED,
+            FUDGE,
+            ExtendedRcode::NOERROR,
+        );
+        writer.set_tsig(tsig_mode, tsig_rr).unwrap();
+        let len = writer.finish();
+        assert_eq!(SUBSEQUENT_WITH_TSIG, &buf[0..len]);
     }
 }

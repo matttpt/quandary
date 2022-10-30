@@ -123,6 +123,14 @@ pub enum TsigMode {
         key: Box<[u8]>,
     },
 
+    /// The message should be signed as a subsequent message in a
+    /// multi-message response.
+    Subsequent {
+        algorithm: Algorithm,
+        prior_mac: Box<[u8]>,
+        key: Box<[u8]>,
+    },
+
     /// The message should not be signed. The MAC field of the TSIG RR
     /// will be left empty.
     Unsigned { algorithm: Box<LowercaseName> },
@@ -627,12 +635,9 @@ impl<'a> Writer<'a> {
         }
 
         let reserved_len = match &mode {
-            TsigMode::Request { algorithm, key: _ } => rr.signed_len(*algorithm),
-            TsigMode::Response {
-                request_mac: _,
-                algorithm,
-                key: _,
-            } => rr.signed_len(*algorithm),
+            TsigMode::Request { algorithm, .. }
+            | TsigMode::Response { algorithm, .. }
+            | TsigMode::Subsequent { algorithm, .. } => rr.signed_len(*algorithm),
             TsigMode::Unsigned { algorithm } => rr.unsigned_len(algorithm),
         };
         if self.cursor + reserved_len > self.available {
@@ -696,6 +701,15 @@ impl<'a> Writer<'a> {
                 } => {
                     tsig.rr
                         .sign_response(message, request_mac, *algorithm, key)
+                        .0
+                }
+                TsigMode::Subsequent {
+                    prior_mac,
+                    algorithm,
+                    key,
+                } => {
+                    tsig.rr
+                        .sign_subsequent(message, prior_mac, *algorithm, key)
                         .0
                 }
                 TsigMode::Unsigned { algorithm } => tsig.rr.unsigned(algorithm),
