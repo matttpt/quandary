@@ -415,23 +415,23 @@ fn do_referral(
         &ns_rrset.rdatas,
     )?;
 
-    // Now, we *must* include glue records; otherwise the delgation
-    // would not work. If glue records do not fit, we fail (and allow
-    // upstream error-handling code to send a response with the TC bit
-    // set).
+    // Now, we *must* include glue records for in-domain name servers;
+    // otherwise the delgation would not work. If these records do not
+    // fit, then we fail (and allow upstream error-handling code to send
+    // a response with the TC bit set).
     //
-    // Additionally, we *try* to include any other nameserver addresses
-    // that are available within the parent zone's hierarchy, including
-    // so-called "sibling glue" (glue records in *another* zone
-    // delegated from the same parent zone). If they don't fit, we just
-    // don't include them.
+    // Additionally, we *try* to include addresses for other name
+    // servers within the parent zone. This includes glue for sibling
+    // domain name servers (those in *another* zone delegated from the
+    // same parent zone). If they don't fit, then we just don't include
+    // them.
     //
-    // TODO: the "DNS Referral Glue Requirements" Internet Draft is
-    // relevant here. Depending on how it turns out, we may need to
-    // change our policies. The latest draft as of this writing is draft
-    // 4, in which § 3.2 states that sibling glue is NOT REQUIRED to
-    // be included if it does not fit—an allowance that we make use of
-    // here.
+    // TODO: the "DNS Glue Requirements in Referral Responses" Internet
+    // Draft is relevant here. Depending on how it turns out, we may
+    // need to change our policies. The latest draft as of this writing
+    // is draft 7, in which § 3.2 states that we are not obligated to
+    // set the TC bit if not all glue records for sibling domain name
+    // servers fit—an allowance that we make use of here.
     let mut glues = Vec::new();
     let mut additionals = Vec::new();
     for rdata in ns_rrset.rdatas.iter() {
