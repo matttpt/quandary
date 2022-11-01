@@ -66,9 +66,39 @@ use crate::rr::{Rdata, RdataSet, Ttl, Type};
 /// called.
 pub struct Writer<'a> {
     octets: &'a mut [u8],
+    cursor: usize,
     limit: usize,
     available: usize,
-    cursor: usize,
+    rr_start: usize,
+    section: Section,
+    qdcount: u16,
+    ancount: u16,
+    nscount: u16,
+    arcount: u16,
+    most_recent_owner: Option<u16>,
+    most_recent_rdata: Option<u16>,
+    compression: bool,
+    edns: Option<Edns>,
+    tsig: Option<Tsig>,
+}
+
+/// A reusable template for a DNS message.
+///
+/// A `Template` stores the state of a [`Writer`], including a copy of
+/// the message that it has written so far. It can then be used to
+/// construct new [`Writer`]s that start out with the same state. This
+/// is useful for serializing many similar messages, for example as part
+/// of a multi-message AXFR response.
+///
+/// To generate a `Template` from a [`Writer`], use
+/// [`Writer::into_template`]. To start a new [`Writer`] from a
+/// `Template`, use [`Writer::try_from_template`] or one of its
+/// variants.
+#[derive(Clone)]
+pub struct Template {
+    octets: Box<[u8]>,
+    limit: usize,
+    reserved: usize,
     rr_start: usize,
     section: Section,
     qdcount: u16,
@@ -94,6 +124,7 @@ enum Section {
 
 /// A type for recording EDNS information for a message until it is
 /// serialized in [`Writer::finish`].
+#[derive(Clone, Debug)]
 struct Edns {
     udp_payload_size: u16,
     extended_rcode_upper_bits: u8,
@@ -101,6 +132,7 @@ struct Edns {
 
 /// A type for recording TSIG information for a message until it is
 /// serialized in [`Writer::finish`].
+#[derive(Clone, Debug)]
 struct Tsig {
     mode: TsigMode,
     reserved_len: usize,
@@ -155,9 +187,9 @@ impl<'a> Writer<'a> {
             octets[0..HEADER_SIZE].fill(0);
             Ok(Self {
                 octets,
+                cursor: HEADER_SIZE,
                 limit,
                 available: limit,
-                cursor: HEADER_SIZE,
                 rr_start: HEADER_SIZE,
                 section: Section::Question,
                 qdcount: 0,
@@ -169,6 +201,106 @@ impl<'a> Writer<'a> {
                 compression: true,
                 edns: None,
                 tsig: None,
+            })
+        }
+    }
+
+    /// Converts this `Writer` into a [`Template`], consuming `self`.
+    pub fn into_template(self) -> Template {
+        let octets = self.octets[0..self.cursor].into();
+        Template {
+            octets,
+            limit: self.limit,
+            reserved: self.limit - self.available,
+            rr_start: self.rr_start,
+            section: self.section,
+            qdcount: self.qdcount,
+            ancount: self.ancount,
+            nscount: self.nscount,
+            arcount: self.arcount,
+            most_recent_owner: self.most_recent_owner,
+            most_recent_rdata: self.most_recent_rdata,
+            compression: self.compression,
+            edns: self.edns,
+            tsig: self.tsig,
+        }
+    }
+
+    /// Creates a new `Writer` from a [`Template`].
+    ///
+    /// This will fail if the provided buffer is not large enough to
+    /// accommodate both the in-progress message stored in the
+    /// [`Template`] and any reserved space (e.g. for OPT or TSIG
+    /// records). If the buffer meets this requirement but is smaller
+    /// than the [`Template`]'s stored message size limit, then the
+    /// limit will be reduced to the buffer size.
+    pub fn try_from_template(octets: &'a mut [u8], template: &Template) -> Result<Self> {
+        Self::try_from_template_impl(octets, template, template.tsig.clone())
+    }
+
+    /// Like [`Writer::try_from_template`], but overrides the TSIG mode,
+    /// setting it to [`TsigMode::Subsequent`]. The MAC of the prior
+    /// signed message must be provided. In addition to the requirements
+    /// of [`Writer::try_from_template`], this will fail if the
+    /// [`TsigMode`] of the [`Template`] is not one of the signing
+    /// modes.
+    pub fn try_from_template_as_tsig_subsequent(
+        octets: &'a mut [u8],
+        template: &Template,
+        prior_mac: Box<[u8]>,
+    ) -> Result<Self> {
+        if let Some(tsig) = &template.tsig {
+            let (algorithm, key) = match &tsig.mode {
+                TsigMode::Request { algorithm, key, .. }
+                | TsigMode::Response { algorithm, key, .. }
+                | TsigMode::Subsequent { algorithm, key, .. } => (*algorithm, key.clone()),
+                _ => return Err(Error::NotSignedTsig),
+            };
+            let new_tsig = Tsig {
+                mode: TsigMode::Subsequent {
+                    algorithm,
+                    key,
+                    prior_mac,
+                },
+                reserved_len: tsig.reserved_len,
+                rr: tsig.rr.clone(),
+            };
+            Self::try_from_template_impl(octets, template, Some(new_tsig))
+        } else {
+            Err(Error::NotTsig)
+        }
+    }
+
+    /// The underlying implementation for [`Writer::try_from_template`]
+    /// and [`Writer::try_from_template_as_tsig_subsequent`].
+    fn try_from_template_impl(
+        octets: &'a mut [u8],
+        template: &Template,
+        tsig: Option<Tsig>,
+    ) -> Result<Self> {
+        let cursor = template.octets.len();
+        if octets.len() < cursor + template.reserved {
+            Err(Error::Truncation)
+        } else {
+            let limit = template.limit.min(octets.len());
+            let available = limit - template.reserved;
+            octets[0..cursor].copy_from_slice(template.octets.as_ref());
+            Ok(Self {
+                octets,
+                cursor,
+                limit,
+                available,
+                rr_start: template.rr_start,
+                section: template.section,
+                qdcount: template.qdcount,
+                ancount: template.ancount,
+                nscount: template.nscount,
+                arcount: template.arcount,
+                most_recent_owner: template.most_recent_owner,
+                most_recent_rdata: template.most_recent_rdata,
+                compression: template.compression,
+                edns: template.edns.clone(),
+                tsig,
             })
         }
     }
@@ -941,6 +1073,10 @@ pub enum Error {
 
     /// An attempt was made to set up TSIG, but TSIG is already enabled.
     AlreadyTsig,
+
+    /// The operation requires TSIG to be enabled and configured for one
+    /// the signing modes.
+    NotSignedTsig,
 }
 
 impl fmt::Display for Error {
@@ -954,6 +1090,7 @@ impl fmt::Display for Error {
             Self::ExtendedRcodeOverflow => f.write_str("extended RCODE would overflow"),
             Self::NotTsig => f.write_str("not a TSIG message"),
             Self::AlreadyTsig => f.write_str("already a TSIG message"),
+            Self::NotSignedTsig => f.write_str("not a signed TSIG message"),
         }
     }
 }
