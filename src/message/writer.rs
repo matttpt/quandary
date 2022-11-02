@@ -34,7 +34,7 @@ use crate::rr::{Rdata, RdataSet, Ttl, Type};
 /// message size limit different from the underlying buffer size) or
 /// with its [`TryFrom`] implementation (which sets the message size
 /// limit equal to the buffer length). The underlying buffer and initial
-/// message size limit must be long enough to accomodate a full DNS
+/// message size limit must be long enough to accommodate a full DNS
 /// message header of 12 octets. The message header is initially zeroed.
 ///
 /// Since header information is in a fixed position, it can be written

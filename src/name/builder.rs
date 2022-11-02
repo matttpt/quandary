@@ -24,7 +24,7 @@ use super::{new_boxed_name, Error, Name, MAX_LABEL_LEN, MAX_N_LABELS, MAX_WIRE_L
 ///
 /// The `NameBuilder` constructs the on-the-wire representation and
 /// label offset array for a [`Name`] using fixed-size internal buffers
-/// that are long enough to accomodate any valid name. If the
+/// that are long enough to accommodate any valid name. If the
 /// `NameBuilder` is placed on the stack, then construction of a
 /// `Box<Name>` (for instance, when parsing a textual representation
 /// while reading a zone file) is fast, requiring only one final heap
