@@ -22,6 +22,7 @@ use super::tsig::{Algorithm, PreparedTsigRr};
 use super::{ExtendedRcode, Opcode, Qclass, Question, Rcode};
 use crate::class::Class;
 use crate::name::{LowercaseName, Name};
+use crate::rr::rdata::TimeSigned;
 use crate::rr::{Rdata, RdataSet, Ttl, Type};
 
 ////////////////////////////////////////////////////////////////////////
@@ -785,6 +786,17 @@ impl<'a> Writer<'a> {
             Ok(())
         } else {
             Err(Error::CountOverflow)
+        }
+    }
+
+    /// Updates the TSIG "time signed" field. This will fail if TSIG has
+    /// not been configured.
+    pub fn update_time_signed(&mut self, time_signed: TimeSigned) -> Result<()> {
+        if let Some(tsig) = &mut self.tsig {
+            tsig.rr.time_signed = time_signed;
+            Ok(())
+        } else {
+            Err(Error::NotTsig)
         }
     }
 
