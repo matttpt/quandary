@@ -1237,7 +1237,7 @@ mod tests {
             add_rrset(&mut writer, *HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS).unwrap();
         }
         assert_eq!(
-            add_rr(&mut writer, *HINTED_NAME, TYPE, CLASS, *TTL, *RDATA),
+            add_rr(&mut writer, *HINTED_NAME, TYPE, CLASS, *TTL, &RDATA),
             Err(Error::CountOverflow),
         );
         assert_eq!(

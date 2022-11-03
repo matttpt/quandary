@@ -999,7 +999,7 @@ mod tests {
         assert_eq!(
             tsig_rr.verify_response(
                 message_up_to_tsig,
-                *REQUEST_MAC,
+                &REQUEST_MAC,
                 Algorithm::HmacSha256,
                 KEY,
                 now

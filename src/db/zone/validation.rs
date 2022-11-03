@@ -411,16 +411,16 @@ mod tests {
     }
 
     fn add_basic_rrs(zone: &mut HashMapTreeZone) {
-        add_rr(zone, &APEX, Type::SOA, *APEX_SOA_RDATA);
-        add_rr(zone, &APEX, Type::NS, *APEX_NS_RDATA);
-        add_rr(zone, &NS, Type::A, *LOCALHOST_RDATA);
+        add_rr(zone, &APEX, Type::SOA, &APEX_SOA_RDATA);
+        add_rr(zone, &APEX, Type::NS, &APEX_NS_RDATA);
+        add_rr(zone, &NS, Type::A, &LOCALHOST_RDATA);
     }
 
     #[test]
     fn validate_detects_missing_apex_soa() {
         let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
-        add_rr(&mut zone, &APEX, Type::NS, *APEX_NS_RDATA);
-        add_rr(&mut zone, &NS, Type::A, *LOCALHOST_RDATA);
+        add_rr(&mut zone, &APEX, Type::NS, &APEX_NS_RDATA);
+        add_rr(&mut zone, &NS, Type::A, &LOCALHOST_RDATA);
         assert_eq!(
             zone.validate().unwrap(),
             vec![ValidationIssue::MissingApexSoa],
@@ -430,10 +430,10 @@ mod tests {
     #[test]
     fn validate_detects_too_many_soas() {
         let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
-        add_rr(&mut zone, &APEX, Type::SOA, *APEX_SOA_RDATA);
-        add_rr(&mut zone, &APEX, Type::SOA, *APEX_SOA_RDATA2);
-        add_rr(&mut zone, &APEX, Type::NS, *APEX_NS_RDATA);
-        add_rr(&mut zone, &NS, Type::A, *LOCALHOST_RDATA);
+        add_rr(&mut zone, &APEX, Type::SOA, &APEX_SOA_RDATA);
+        add_rr(&mut zone, &APEX, Type::SOA, &APEX_SOA_RDATA2);
+        add_rr(&mut zone, &APEX, Type::NS, &APEX_NS_RDATA);
+        add_rr(&mut zone, &NS, Type::A, &LOCALHOST_RDATA);
         assert_eq!(
             zone.validate().unwrap(),
             vec![ValidationIssue::TooManyApexSoas],
@@ -446,7 +446,7 @@ mod tests {
         // zone: there should be an error.
         let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
         add_basic_rrs(&mut zone);
-        add_rr(&mut zone, &SUBDEL, Type::NS, *SUBDEL_NS_RDATA);
+        add_rr(&mut zone, &SUBDEL, Type::NS, &SUBDEL_NS_RDATA);
         assert_eq!(
             zone.validate().unwrap(),
             [ValidationIssue::MissingGlue(NS_SUBDEL.clone())],
@@ -456,16 +456,16 @@ mod tests {
         // child zone: there should not be an error.
         let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
         add_basic_rrs(&mut zone);
-        add_rr(&mut zone, &SUBDEL, Type::NS, *APEX_NS_RDATA);
-        add_rr(&mut zone, &SUBDEL2, Type::NS, *SUBDEL_NS_RDATA);
+        add_rr(&mut zone, &SUBDEL, Type::NS, &APEX_NS_RDATA);
+        add_rr(&mut zone, &SUBDEL2, Type::NS, &SUBDEL_NS_RDATA);
         assert_eq!(zone.validate().unwrap(), []);
 
         // Wide glue policy when the nameserver is within a different
         // child zone: there should still be an error.
         let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Wide);
         add_basic_rrs(&mut zone);
-        add_rr(&mut zone, &SUBDEL, Type::NS, *APEX_NS_RDATA);
-        add_rr(&mut zone, &SUBDEL2, Type::NS, *SUBDEL_NS_RDATA);
+        add_rr(&mut zone, &SUBDEL, Type::NS, &APEX_NS_RDATA);
+        add_rr(&mut zone, &SUBDEL2, Type::NS, &SUBDEL_NS_RDATA);
         assert_eq!(
             zone.validate().unwrap(),
             [ValidationIssue::MissingGlue(NS_SUBDEL.clone())],
@@ -475,7 +475,7 @@ mod tests {
     #[test]
     fn validate_detects_missing_apex_ns() {
         let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
-        add_rr(&mut zone, &APEX, Type::SOA, *APEX_SOA_RDATA);
+        add_rr(&mut zone, &APEX, Type::SOA, &APEX_SOA_RDATA);
         assert_eq!(
             zone.validate().unwrap(),
             vec![ValidationIssue::MissingApexNs],
@@ -514,7 +514,7 @@ mod tests {
             Type::CNAME,
             HOST2.wire_repr().try_into().unwrap(),
         );
-        add_rr(&mut zone, &HOST1, Type::A, *LOCALHOST_RDATA);
+        add_rr(&mut zone, &HOST1, Type::A, &LOCALHOST_RDATA);
         assert_eq!(
             zone.validate().unwrap(),
             vec![ValidationIssue::OtherRecordsAtCname(&HOST1)],
@@ -525,8 +525,8 @@ mod tests {
     fn validate_detects_missing_ns_address() {
         // First case: the apex NS record is missing an address.
         let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
-        add_rr(&mut zone, &APEX, Type::SOA, *APEX_SOA_RDATA);
-        add_rr(&mut zone, &APEX, Type::NS, *APEX_NS_RDATA);
+        add_rr(&mut zone, &APEX, Type::SOA, &APEX_SOA_RDATA);
+        add_rr(&mut zone, &APEX, Type::NS, &APEX_NS_RDATA);
         assert_eq!(
             zone.validate().unwrap(),
             vec![ValidationIssue::MissingNsAddress(NS.clone())],
@@ -536,7 +536,7 @@ mod tests {
         // within the zone is missing an address.
         let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
         add_basic_rrs(&mut zone);
-        add_rr(&mut zone, &SUBDEL2, Type::NS, *SUBDEL_NS_RDATA);
+        add_rr(&mut zone, &SUBDEL2, Type::NS, &SUBDEL_NS_RDATA);
         assert_eq!(
             zone.validate().unwrap(),
             vec![ValidationIssue::MissingNsAddress(NS_SUBDEL.clone())],
@@ -547,7 +547,7 @@ mod tests {
     fn validate_detects_missing_mx_address() {
         let mut zone = HashMapTreeZone::new(APEX.clone(), Class::IN, GluePolicy::Narrow);
         add_basic_rrs(&mut zone);
-        add_rr(&mut zone, &APEX, Type::MX, *APEX_MX_RDATA);
+        add_rr(&mut zone, &APEX, Type::MX, &APEX_MX_RDATA);
         assert_eq!(
             zone.validate().unwrap(),
             vec![ValidationIssue::MissingMxAddress(MX.clone())],

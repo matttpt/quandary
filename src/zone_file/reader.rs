@@ -233,7 +233,7 @@ impl<S: Read> Reader<S> {
     /// the start of a line ending, `None` is returned.
     fn get_eol_at(&mut self, index: usize) -> io::Result<Option<usize>> {
         let peek_1 = self.peek_octet_at(index)?;
-        if peek_1 == None {
+        if peek_1.is_none() {
             Ok(Some(0))
         } else if peek_1 == Some(b'\n') {
             Ok(Some(1))

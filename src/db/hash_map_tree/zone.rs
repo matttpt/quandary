@@ -332,7 +332,7 @@ mod tests {
     fn add_rejects_mismatched_class() {
         let mut zone = new_zone();
         assert_eq!(
-            zone.add(&NAME, Type::A, Class::CH, Ttl::from(3600), *LOCALHOST),
+            zone.add(&NAME, Type::A, Class::CH, Ttl::from(3600), &LOCALHOST),
             Err(Error::ClassMismatch),
         );
     }
@@ -340,10 +340,10 @@ mod tests {
     #[test]
     fn add_rejects_mismatched_ttl() {
         let mut zone = new_zone();
-        zone.add(&NAME, Type::A, Class::IN, Ttl::from(3600), *LOCALHOST)
+        zone.add(&NAME, Type::A, Class::IN, Ttl::from(3600), &LOCALHOST)
             .unwrap();
         assert_eq!(
-            zone.add(&NAME, Type::A, Class::IN, Ttl::from(7200), *LOCALHOST),
+            zone.add(&NAME, Type::A, Class::IN, Ttl::from(7200), &LOCALHOST),
             Err(Error::TtlMismatch),
         );
     }
@@ -352,7 +352,7 @@ mod tests {
     fn add_rejects_owner_outside_of_zone() {
         let mut zone = new_zone();
         assert_eq!(
-            zone.add(&OUTSIDE, Type::A, Class::CH, Ttl::from(3600), *LOCALHOST),
+            zone.add(&OUTSIDE, Type::A, Class::CH, Ttl::from(3600), &LOCALHOST),
             Err(Error::NotInZone),
         );
     }
@@ -365,7 +365,7 @@ mod tests {
         let name: Box<Name> = "a.b.c.d.".parse().unwrap();
         let apex: Box<Name> = "d.".parse().unwrap();
         let mut zone = HashMapTreeZone::new(apex, Class::IN, GluePolicy::Narrow);
-        zone.add(&name, Type::A, Class::IN, Ttl::from(3600), *LOCALHOST)
+        zone.add(&name, Type::A, Class::IN, Ttl::from(3600), &LOCALHOST)
             .unwrap();
 
         // Verify that Zone::add had the expected results.
