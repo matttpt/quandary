@@ -18,7 +18,7 @@ use std::borrow::Cow;
 use std::fmt::{self, Write};
 
 use super::Type;
-use crate::name;
+use crate::name::{self, Name};
 use crate::util::nibble_to_ascii_hex_digit;
 
 // Implementation helpers.
@@ -205,6 +205,26 @@ impl Rdata {
         }
     }
 
+    /// Returns an iterator over this `Rdata`'s [`Component`]s, assuming
+    /// that it is of type `rr_type`.
+    pub fn components(&self, rr_type: Type) -> Components {
+        match rr_type {
+            Type::NS
+            | Type::MD
+            | Type::MF
+            | Type::CNAME
+            | Type::MB
+            | Type::MG
+            | Type::MR
+            | Type::PTR => Components::for_single_compressible_name(self.octets()),
+            Type::SOA => self.components_as_soa(),
+            Type::MINFO => self.components_as_minfo(),
+            Type::MX => self.components_as_mx(),
+            Type::SRV => self.components_as_srv(),
+            _ => Components::for_nameless(self.octets()),
+        }
+    }
+
     /// Returns whether the [`Rdata`] is empty.
     pub fn is_empty(&self) -> bool {
         self.octets.is_empty()
@@ -295,6 +315,117 @@ impl fmt::Debug for Rdata {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "\"{}\"", self)
     }
+}
+
+////////////////////////////////////////////////////////////////////////
+// COMPONENTS                                                         //
+////////////////////////////////////////////////////////////////////////
+
+/// A component of an [`Rdata`] classified for DNS compression.
+///
+/// For DNS compression, it is useful to break RDATA into three types of
+/// components:
+///
+/// 1. embedded domain names that may be compressed per [RFC 3597 § 4],
+/// 2. embedded domain names that may *not* be compressed per
+///    [RFC 3597 § 4], and
+/// 3. all other data.
+///
+/// The [`Components`] iterator, produced by [`Rdata::components`], can
+/// be used to iterate the [`Component`]s of an [`Rdata`].
+///
+/// [RFC 3597 § 4]: https://datatracker.ietf.org/doc/html/rfc3597#section-4
+pub enum Component<'a> {
+    CompressibleName(Box<Name>),
+    UncompressibleName(Box<Name>),
+    Other(&'a [u8]),
+}
+
+/// Specifies (for [`Components::next`]) how to parse the next
+/// [`Component`] of an [`Rdata`].
+#[derive(Copy, Clone, Debug)]
+enum ComponentType {
+    CompressibleName,
+    UncompressibleName,
+    FixedLen(usize),
+}
+
+/// An iterator over the [`Component`]s of an [`Rdata`]. See
+/// [`Rdata::components`].
+pub struct Components<'a> {
+    types: &'static [ComponentType],
+    rdata: &'a [u8],
+}
+
+impl<'a> Components<'a> {
+    /// Creates a `Components` iterator for RDATA that is a single,
+    /// compressible domain name (e.g. CNAME or NS RDATA).
+    fn for_single_compressible_name(rdata: &'a [u8]) -> Self {
+        Self {
+            types: &[ComponentType::CompressibleName],
+            rdata,
+        }
+    }
+
+    /// Creates a `Components` iterator for RDATA that does not embed
+    /// any domain names.
+    fn for_nameless(rdata: &'a [u8]) -> Self {
+        Self { types: &[], rdata }
+    }
+}
+
+impl<'a> Iterator for Components<'a> {
+    type Item = Result<Component<'a>, ReadRdataError>;
+
+    fn next(&mut self) -> Option<Result<Component<'a>, ReadRdataError>> {
+        if let Some((next_type, remaining_types)) = self.types.split_first() {
+            let (component, remaining_rdata) = match *next_type {
+                ComponentType::CompressibleName => match build_name_component(self.rdata, true) {
+                    Ok(res) => res,
+                    Err(e) => return Some(Err(e)),
+                },
+                ComponentType::UncompressibleName => {
+                    match build_name_component(self.rdata, false) {
+                        Ok(res) => res,
+                        Err(e) => return Some(Err(e)),
+                    }
+                }
+                ComponentType::FixedLen(len) => {
+                    let fixed = match self.rdata.get(0..len) {
+                        Some(fixed) => fixed,
+                        None => return Some(Err(ReadRdataError::UnexpectedEom)),
+                    };
+                    let remaining = &self.rdata[len..];
+                    (Component::Other(fixed), remaining)
+                }
+            };
+            self.types = remaining_types;
+            self.rdata = remaining_rdata;
+            Some(Ok(component))
+        } else if self.rdata.is_empty() {
+            None
+        } else {
+            let component = Component::Other(self.rdata);
+            self.rdata = &[];
+            Some(Ok(component))
+        }
+    }
+}
+
+/// A helper to build one of the two domain name [`Component`] variants
+/// from RDATA.
+fn build_name_component(
+    rdata: &[u8],
+    compressible: bool,
+) -> Result<(Component<'static>, &[u8]), ReadRdataError> {
+    let (name, len) = Name::try_from_uncompressed(rdata)?;
+    let component = if compressible {
+        Component::CompressibleName(name)
+    } else {
+        Component::UncompressibleName(name)
+    };
+    let remaining = &rdata[len..];
+    Ok((component, remaining))
 }
 
 ////////////////////////////////////////////////////////////////////////

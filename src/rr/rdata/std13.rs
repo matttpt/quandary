@@ -23,7 +23,7 @@ use std::iter;
 use std::net::Ipv4Addr;
 
 use super::helpers;
-use super::{Rdata, RdataTooLongError, ReadRdataError};
+use super::{ComponentType, Components, Rdata, RdataTooLongError, ReadRdataError};
 use crate::name::Name;
 
 ////////////////////////////////////////////////////////////////////////
@@ -282,6 +282,19 @@ impl Rdata {
             None => self.octets == other.octets,
         }
     }
+
+    /// Returns an iterator over this `Rdata`'s
+    /// [`Component`](super::Component)s, assuming that it is of type
+    /// SOA.
+    pub fn components_as_soa(&self) -> Components {
+        Components {
+            types: &[
+                ComponentType::CompressibleName,
+                ComponentType::CompressibleName,
+            ],
+            rdata: self.octets(),
+        }
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -419,6 +432,19 @@ impl Rdata {
             None => self.octets == other.octets,
         }
     }
+
+    /// Returns an iterator over this `Rdata`'s
+    /// [`Component`](super::Component)s, assuming that it is of type
+    /// MINFO.
+    pub fn components_as_minfo(&self) -> Components {
+        Components {
+            types: &[
+                ComponentType::CompressibleName,
+                ComponentType::CompressibleName,
+            ],
+            rdata: self.octets(),
+        }
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -486,6 +512,16 @@ impl Rdata {
         } else {
             // Invalid records; do a bitwise comparison.
             self.octets == other.octets
+        }
+    }
+
+    /// Returns an iterator over this `Rdata`'s
+    /// [`Component`](super::Component)s, assuming that it is of type
+    /// MX.
+    pub fn components_as_mx(&self) -> Components {
+        Components {
+            types: &[ComponentType::FixedLen(2), ComponentType::CompressibleName],
+            rdata: self.octets(),
         }
     }
 }

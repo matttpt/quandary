@@ -17,7 +17,7 @@
 //! [RFC 2782]: https://datatracker.ietf.org/doc/html/rfc2782
 
 use super::helpers;
-use super::{Rdata, ReadRdataError};
+use super::{ComponentType, Components, Rdata, ReadRdataError};
 use crate::name::Name;
 
 ////////////////////////////////////////////////////////////////////////
@@ -87,6 +87,19 @@ impl Rdata {
         } else {
             // Invalid records; do a bitwise comparison.
             self.octets == other.octets
+        }
+    }
+
+    /// Returns an iterator over this `Rdata`'s
+    /// [`Component`](super::Component)s, assuming that it is of type
+    /// SRV.
+    pub fn components_as_srv(&self) -> Components {
+        Components {
+            types: &[
+                ComponentType::FixedLen(6),
+                ComponentType::UncompressibleName,
+            ],
+            rdata: self.octets(),
         }
     }
 }
