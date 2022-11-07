@@ -16,13 +16,16 @@
 //! messages.
 
 use std::fmt;
+use std::num::NonZeroU16;
+
+use arrayvec::ArrayVec;
 
 use super::constants::*;
 use super::tsig::{Algorithm, PreparedTsigRr};
 use super::{ExtendedRcode, Opcode, Qclass, Question, Rcode};
 use crate::class::Class;
 use crate::name::{LowercaseName, Name};
-use crate::rr::rdata::TimeSigned;
+use crate::rr::rdata::{Component, TimeSigned};
 use crate::rr::{Rdata, RdataSet, Ttl, Type};
 
 ////////////////////////////////////////////////////////////////////////
@@ -510,7 +513,9 @@ impl<'a> Writer<'a> {
 
     /// Adds a resource record to the answer section of the message.
     /// This must be used after any questions are added and before
-    /// RRs are added to any other section.
+    /// RRs are added to any other section. [`HintPointer`]s for domain
+    /// names in the RDATA are written to the [`HintPointerVec`] if it
+    /// is provided.
     pub fn add_answer_rr(
         &mut self,
         owner: HintedName,
@@ -518,10 +523,11 @@ impl<'a> Writer<'a> {
         class: Class,
         ttl: Ttl,
         rdata: &Rdata,
+        hint_pointer_vec: Option<&mut HintPointerVec>,
     ) -> Result<()> {
         self.with_rollback(|this| {
             this.change_section_to_answer()?;
-            this.add_rr(owner, rr_type, class, ttl, rdata)?;
+            this.add_rr(owner, rr_type, class, ttl, rdata, hint_pointer_vec)?;
             if let Some(new_ancount) = this.ancount.checked_add(1) {
                 this.ancount = new_ancount;
                 Ok(())
@@ -533,7 +539,8 @@ impl<'a> Writer<'a> {
 
     /// Adds an RRset to the answer section of the message. This must be
     /// used after any questions are added and before RRs are added to
-    /// any other section.
+    /// any other section. [`HintPointer`]s for domain names in the
+    /// RDATA are written to the [`HintPointerVec`] if it is provided.
     pub fn add_answer_rrset(
         &mut self,
         owner: HintedName,
@@ -541,10 +548,11 @@ impl<'a> Writer<'a> {
         class: Class,
         ttl: Ttl,
         rdatas: &RdataSet,
+        hint_pointer_vec: Option<&mut HintPointerVec>,
     ) -> Result<()> {
         self.with_rollback(|this| {
             this.change_section_to_answer()?;
-            let n_added = this.add_rrset(owner, rr_type, class, ttl, rdatas)?;
+            let n_added = this.add_rrset(owner, rr_type, class, ttl, rdatas, hint_pointer_vec)?;
             if n_added > u16::MAX as usize {
                 Err(Error::CountOverflow)
             } else if let Some(new_ancount) = this.ancount.checked_add(n_added as u16) {
@@ -570,7 +578,9 @@ impl<'a> Writer<'a> {
 
     /// Adds a resource record to the authority section of the message.
     /// This must be used after any questions and answer RRs are added
-    /// and before any additional RRs are added.
+    /// and before any additional RRs are added. [`HintPointer`]s for
+    /// domain names in the RDATA are written to the [`HintPointerVec`]
+    /// if it is provided.
     pub fn add_authority_rr(
         &mut self,
         owner: HintedName,
@@ -578,10 +588,11 @@ impl<'a> Writer<'a> {
         class: Class,
         ttl: Ttl,
         rdata: &Rdata,
+        hint_pointer_vec: Option<&mut HintPointerVec>,
     ) -> Result<()> {
         self.with_rollback(|this| {
             this.change_section_to_authority()?;
-            this.add_rr(owner, rr_type, class, ttl, rdata)?;
+            this.add_rr(owner, rr_type, class, ttl, rdata, hint_pointer_vec)?;
             if let Some(new_nscount) = this.nscount.checked_add(1) {
                 this.nscount = new_nscount;
                 Ok(())
@@ -593,7 +604,9 @@ impl<'a> Writer<'a> {
 
     /// Adds an RRset to the authority section of the message. This
     /// must be used after any questions and answer RRs are added and
-    /// before any additional RRs are added.
+    /// before any additional RRs are added. [`HintPointer`]s for domain
+    /// names in the RDATA are written to the [`HintPointerVec`] if it
+    /// is provided.
     pub fn add_authority_rrset(
         &mut self,
         owner: HintedName,
@@ -601,10 +614,11 @@ impl<'a> Writer<'a> {
         class: Class,
         ttl: Ttl,
         rdatas: &RdataSet,
+        hint_pointer_vec: Option<&mut HintPointerVec>,
     ) -> Result<()> {
         self.with_rollback(|this| {
             this.change_section_to_authority()?;
-            let n_added = this.add_rrset(owner, rr_type, class, ttl, rdatas)?;
+            let n_added = this.add_rrset(owner, rr_type, class, ttl, rdatas, hint_pointer_vec)?;
             if n_added > u16::MAX as usize {
                 Err(Error::CountOverflow)
             } else if let Some(new_nscount) = this.nscount.checked_add(n_added as u16) {
@@ -631,7 +645,8 @@ impl<'a> Writer<'a> {
 
     /// Adds a resource record to the additional section of the message.
     /// This must be used after any questions and any RRs in other
-    /// sections are added.
+    /// sections are added. [`HintPointer`]s for domain names in the
+    /// RDATA are written to the [`HintPointerVec`] if it is provided.
     pub fn add_additional_rr(
         &mut self,
         owner: HintedName,
@@ -639,10 +654,11 @@ impl<'a> Writer<'a> {
         class: Class,
         ttl: Ttl,
         rdata: &Rdata,
+        hint_pointer_vec: Option<&mut HintPointerVec>,
     ) -> Result<()> {
         self.with_rollback(|this| {
             this.section = Section::Additional;
-            this.add_rr(owner, rr_type, class, ttl, rdata)?;
+            this.add_rr(owner, rr_type, class, ttl, rdata, hint_pointer_vec)?;
             if let Some(new_arcount) = this.arcount.checked_add(1) {
                 this.arcount = new_arcount;
                 Ok(())
@@ -654,7 +670,8 @@ impl<'a> Writer<'a> {
 
     /// Adds an RRset to the additional section of the message. This
     /// must be used after any questions and any RRs in other sections
-    /// are added.
+    /// are added. [`HintPointer`]s for domain names in the RDATA are
+    /// written to the [`HintPointerVec`] if it is provided.
     pub fn add_additional_rrset(
         &mut self,
         owner: HintedName,
@@ -662,10 +679,11 @@ impl<'a> Writer<'a> {
         class: Class,
         ttl: Ttl,
         rdatas: &RdataSet,
+        hint_pointer_vec: Option<&mut HintPointerVec>,
     ) -> Result<()> {
         self.with_rollback(|this| {
             this.section = Section::Additional;
-            let n_added = this.add_rrset(owner, rr_type, class, ttl, rdatas)?;
+            let n_added = this.add_rrset(owner, rr_type, class, ttl, rdatas, hint_pointer_vec)?;
             if n_added > u16::MAX as usize {
                 Err(Error::CountOverflow)
             } else if let Some(new_arcount) = this.arcount.checked_add(n_added as u16) {
@@ -688,14 +706,29 @@ impl<'a> Writer<'a> {
         class: Class,
         ttl: Ttl,
         rdata: &Rdata,
+        mut hint_pointer_vec: Option<&mut HintPointerVec>,
     ) -> Result<()> {
         self.most_recent_owner = self.write_hinted_name(owner)?;
         self.try_push_u16(rr_type.into())?;
         self.try_push_u16(class.into())?;
         self.try_push_u32(ttl.into())?;
         self.try_push_u16(rdata.len() as u16)?;
+
         self.most_recent_rdata = (self.cursor <= POINTER_MAX).then_some(self.cursor as u16);
-        self.try_push(rdata.octets())
+        for component in rdata.components(rr_type) {
+            let component = component.or(Err(Error::InvalidRdata))?;
+            match component {
+                Component::CompressibleName(name) | Component::UncompressibleName(name) => {
+                    if let Some(hint_pointer_vec) = hint_pointer_vec.as_deref_mut() {
+                        hint_pointer_vec.push(HintPointer::new(self.cursor));
+                    }
+                    self.try_push(name.wire_repr())?;
+                }
+                Component::Other(octets) => self.try_push(octets)?,
+            }
+        }
+
+        Ok(())
     }
 
     /// Writes out an RRset at the current cursor. This is for internal
@@ -709,10 +742,18 @@ impl<'a> Writer<'a> {
         class: Class,
         ttl: Ttl,
         rdatas: &RdataSet,
+        mut hint_pointer_vec: Option<&mut HintPointerVec>,
     ) -> Result<usize> {
         let mut n_added = 0;
         for rdata in rdatas.iter() {
-            self.add_rr(owner, rr_type, class, ttl, rdata)?;
+            self.add_rr(
+                owner,
+                rr_type,
+                class,
+                ttl,
+                rdata,
+                hint_pointer_vec.as_deref_mut(),
+            )?;
             owner.hint = Hint::MostRecentOwner;
             n_added += 1;
         }
@@ -834,6 +875,7 @@ impl<'a> Writer<'a> {
                 class,
                 ttl,
                 Rdata::empty(),
+                None,
             )
             .unwrap();
         }
@@ -870,6 +912,7 @@ impl<'a> Writer<'a> {
                 Qclass::ANY.into(),
                 Ttl::from(0),
                 &rdata,
+                None,
             )
             .unwrap();
             mac
@@ -929,6 +972,14 @@ impl<'a> Writer<'a> {
             }
             Hint::MostRecentRdata => {
                 if let Some(pointer) = self.most_recent_rdata {
+                    self.try_push_u16(0xc000 | pointer).and(Ok(Some(pointer)))
+                } else {
+                    self.write_unhinted_name(hinted_name.name)
+                }
+            }
+            Hint::Explicit(HintPointer(pointer)) => {
+                let pointer = pointer.get();
+                if (pointer as usize) < self.cursor && pointer <= (POINTER_MAX as u16) {
                     self.try_push_u16(0xc000 | pointer).and(Ok(Some(pointer)))
                 } else {
                     self.write_unhinted_name(hinted_name.name)
@@ -1027,6 +1078,49 @@ impl<'a> HintedName<'a> {
     pub const fn new(hint: Hint, name: &'a Name) -> Self {
         Self { hint, name }
     }
+
+    /// Creates a new `HintedName`, generating the hint from the
+    /// specified [`HintPointer`] in a [`HintPointerVec`] if available
+    /// and using [`Hint::None`] otherwise.
+    pub fn from_hint_pointer_vec(
+        hint_pointer_vec: &HintPointerVec,
+        index: usize,
+        name: &'a Name,
+    ) -> Self {
+        Self {
+            hint: hint_pointer_vec
+                .get(index)
+                .map_or(Hint::None, Hint::Explicit),
+            name,
+        }
+    }
+
+    /// Creates a new `HintedName`, generating the hint from the
+    /// specified [`HintPointer`] in a [`HintPointerVec`] if a vector
+    /// is provided and the hint is available. [`Hint::None`] is used
+    /// otherwise.
+    pub fn from_hint_pointer_vec_opt(
+        hint_pointer_vec: Option<&HintPointerVec>,
+        index: usize,
+        name: &'a Name,
+    ) -> Self {
+        Self {
+            hint: hint_pointer_vec
+                .and_then(|ha| ha.get(index))
+                .map_or(Hint::None, Hint::Explicit),
+            name,
+        }
+    }
+
+    /// Returns the [`Hint`] associated with this `HintedName`.
+    pub const fn hint(self) -> Hint {
+        self.hint
+    }
+
+    /// Returns the [`Name`] associated with this `HintedName`.
+    pub const fn name(self) -> &'a Name {
+        self.name
+    }
 }
 
 /// A hint for how to compress a domain name in a DNS message.
@@ -1045,8 +1139,75 @@ pub enum Hint {
     /// record most recently added to the message.
     MostRecentRdata,
 
+    /// The name was previously written at a recorded location; use the
+    /// provided pointer.
+    Explicit(HintPointer),
+
     /// No hint is provided.
     None,
+}
+
+/// An explicit pointer to use to compress a domain name.
+///
+/// A `HintPointer` is used to record where a name was previously
+/// written, so that (in conjunction with [`Hint::Explicit`]) subsequent
+/// instances of the name can be compressed simply by copying the
+/// pointer. Currently, the only way to obtain a `HintPointer` is to use
+/// [`Writer`] methods that generate them. They are generally delivered
+/// to the caller by pushing them into a caller-provided
+/// [`HintPointerVec`].
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct HintPointer(NonZeroU16);
+
+impl HintPointer {
+    /// Creates a new `HintPointer`.
+    fn new(cursor: usize) -> Option<Self> {
+        if cursor <= POINTER_MAX {
+            NonZeroU16::new(cursor as u16).map(Self)
+        } else {
+            None
+        }
+    }
+}
+
+/// The maximum number of pointers that fit in a [`HintPointerVec`]. The
+/// current value is chosen so that we will not run out of room when
+/// writing the root's NS RRset.
+const HINT_POINTER_VEC_SIZE: usize = 16;
+
+/// An array-backed vector of [`HintPointer`]s.
+///
+/// [`Writer`] methods that provide the caller with [`HintPointer`]s for
+/// domain names that they write may do so by pushing them into a
+/// `HintPointerVec`. This structure is backed by a fixed-size array and
+/// is suitable for stack allocation. This means that a
+/// [`HintPointerVec`] may not be able to hold all hints generated.
+/// Hints that do not fit are silently dropped. The array size is
+/// calibrated so that it will not fill up for most use cases.
+#[derive(Clone, Debug, Default)]
+pub struct HintPointerVec {
+    inner: ArrayVec<Option<HintPointer>, { HINT_POINTER_VEC_SIZE }>,
+}
+
+impl HintPointerVec {
+    /// Constructs a new `HintPointerVec`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Gets an entry from the vector.
+    ///
+    /// Note that if no [`HintPointer`] is available for index `n`, it
+    /// does *not* follow that none is available for index `n + 1`.
+    pub fn get(&self, index: usize) -> Option<HintPointer> {
+        self.inner.get(index).copied().flatten()
+    }
+
+    /// Pushes an entry if space remains in the vector. The value is
+    /// silently discarded if not.
+    fn push(&mut self, pointer: Option<HintPointer>) {
+        let _ = self.inner.try_push(pointer);
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -1068,6 +1229,10 @@ pub enum Error {
     /// in the wrong place in the message (e.g., adding a question after
     /// an answer resource record has already been serialized).
     OutOfOrder,
+
+    /// The operation required parsing of RDATA, and it was found to be
+    /// invalid.
+    InvalidRdata,
 
     /// An attempt was made to set EDNS parameters on a non-EDNS
     /// message.
@@ -1097,6 +1262,7 @@ impl fmt::Display for Error {
             Self::CountOverflow => f.write_str("record count would overflow"),
             Self::Truncation => f.write_str("message would be truncated"),
             Self::OutOfOrder => f.write_str("question or record serialized out of order"),
+            Self::InvalidRdata => f.write_str("invalid RDATA"),
             Self::NotEdns => f.write_str("not an EDNS message"),
             Self::AlreadyEdns => f.write_str("already an EDNS message"),
             Self::ExtendedRcodeOverflow => f.write_str("extended RCODE would overflow"),
@@ -1171,7 +1337,7 @@ mod tests {
         writer.set_rcode(Rcode::NOERROR);
         writer.add_question(&QUESTION).unwrap();
         writer
-            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
         let len = writer.finish();
         assert_eq!(
@@ -1229,22 +1395,42 @@ mod tests {
 
     fn rr_count_overflow_test_impl<'a>(
         buf: &'a mut [u8],
-        add_rr: fn(&mut Writer<'a>, HintedName, Type, Class, Ttl, &Rdata) -> Result<()>,
-        add_rrset: fn(&mut Writer<'a>, HintedName, Type, Class, Ttl, &RdataSet) -> Result<()>,
+        add_rr: AddRr<'a>,
+        add_rrset: AddRrset<'a>,
     ) {
         let mut writer = Writer::try_from(buf).unwrap();
         for _ in 0..u16::MAX {
-            add_rrset(&mut writer, *HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS).unwrap();
+            add_rrset(&mut writer, *HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None).unwrap();
         }
         assert_eq!(
-            add_rr(&mut writer, *HINTED_NAME, TYPE, CLASS, *TTL, &RDATA),
+            add_rr(&mut writer, *HINTED_NAME, TYPE, CLASS, *TTL, &RDATA, None),
             Err(Error::CountOverflow),
         );
         assert_eq!(
-            add_rrset(&mut writer, *HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS),
+            add_rrset(&mut writer, *HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None),
             Err(Error::CountOverflow),
         );
     }
+
+    type AddRr<'a> = fn(
+        &mut Writer<'a>,
+        HintedName,
+        Type,
+        Class,
+        Ttl,
+        &Rdata,
+        Option<&mut HintPointerVec>,
+    ) -> Result<()>;
+
+    type AddRrset<'a> = fn(
+        &mut Writer<'a>,
+        HintedName,
+        Type,
+        Class,
+        Ttl,
+        &RdataSet,
+        Option<&mut HintPointerVec>,
+    ) -> Result<()>;
 
     #[test]
     fn writer_enforces_question_ordering() {
@@ -1259,19 +1445,19 @@ mod tests {
 
         // Check Answer -> Question.
         writer
-            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
         assert_eq!(writer.add_question(&QUESTION), Err(Error::OutOfOrder));
 
         // Check Authority -> Question.
         writer
-            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
         assert_eq!(writer.add_question(&QUESTION), Err(Error::OutOfOrder));
 
         // Check Additional -> Question.
         writer
-            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
         assert_eq!(writer.add_question(&QUESTION), Err(Error::OutOfOrder));
     }
@@ -1283,36 +1469,36 @@ mod tests {
 
         // Check empty (Question) -> Answer.
         writer
-            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
 
         // Check Answer -> Answer.
         writer
-            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
 
         // Check Question -> Answer.
         writer.clear_rrs();
         writer.add_question(&QUESTION).unwrap();
         writer
-            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
 
         // Check Authority -> Answer.
         writer
-            .add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
         assert_eq!(
-            writer.add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS),
+            writer.add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None),
             Err(Error::OutOfOrder),
         );
 
         // Check Additional -> Answer.
         writer
-            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
         assert_eq!(
-            writer.add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS),
+            writer.add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None),
             Err(Error::OutOfOrder),
         );
     }
@@ -1324,37 +1510,37 @@ mod tests {
 
         // Check empty (Question) -> Authority.
         writer
-            .add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
 
         // Check Authority -> Authority.
         writer
-            .add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
 
         // Check Question -> Authority.
         writer.clear_rrs();
         writer.add_question(&QUESTION).unwrap();
         writer
-            .add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
 
         // Check Answer -> Authority.
         writer.clear_rrs();
         writer
-            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
         writer
-            .add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
 
         // Check Additional -> Authority.
         writer.clear_rrs();
         writer
-            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
         assert_eq!(
-            writer.add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS),
+            writer.add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None),
             Err(Error::OutOfOrder),
         );
     }
@@ -1366,37 +1552,37 @@ mod tests {
 
         // Check empty (Question) -> Additional.
         writer
-            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
 
         // Check Additional -> Additional.
         writer
-            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
 
         // Check Question -> Additional.
         writer.clear_rrs();
         writer.add_question(&QUESTION).unwrap();
         writer
-            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
 
         // Check Answer -> Additional.
         writer.clear_rrs();
         writer
-            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
         writer
-            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
 
         // Check Authority -> Additional.
         writer.clear_rrs();
         writer
-            .add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_authority_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
         writer
-            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
     }
 
@@ -1518,7 +1704,7 @@ mod tests {
         writer.add_question(&QUESTION).unwrap();
         let hinted_for_qname = HintedName::new(Hint::Qname, NAME.as_ref());
         writer
-            .add_answer_rrset(hinted_for_qname, TYPE, CLASS, *TTL, &RDATAS)
+            .add_answer_rrset(hinted_for_qname, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
         let len = writer.finish();
         assert_eq!(
@@ -1535,11 +1721,11 @@ mod tests {
         let mut buf = [0; 512];
         let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
         writer
-            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS)
+            .add_answer_rrset(*HINTED_NAME, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
         let hinted_for_mro = HintedName::new(Hint::MostRecentOwner, NAME.as_ref());
         writer
-            .add_additional_rrset(hinted_for_mro, TYPE, CLASS, *TTL, &RDATAS)
+            .add_additional_rrset(hinted_for_mro, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
         let len = writer.finish();
         assert_eq!(
@@ -1559,11 +1745,11 @@ mod tests {
         let cname: Box<Name> = "canonical.test.".parse().unwrap();
         let cname_rdata = cname.wire_repr().try_into().unwrap();
         writer
-            .add_answer_rr(*HINTED_NAME, Type::CNAME, CLASS, *TTL, cname_rdata)
+            .add_answer_rr(*HINTED_NAME, Type::CNAME, CLASS, *TTL, cname_rdata, None)
             .unwrap();
         let hinted_for_mrr = HintedName::new(Hint::MostRecentRdata, &cname);
         writer
-            .add_answer_rrset(hinted_for_mrr, TYPE, CLASS, *TTL, &RDATAS)
+            .add_answer_rrset(hinted_for_mrr, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
         let len = writer.finish();
         assert_eq!(
@@ -1577,6 +1763,38 @@ mod tests {
     }
 
     #[test]
+    fn explicit_hint_works() {
+        let mut buf = [0; 512];
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        let exchange: Box<Name> = "mx.quandary.test.".parse().unwrap();
+        let rdata = Rdata::new_mx(10, &exchange);
+        let mut hint_pointer_vec = HintPointerVec::new();
+        writer
+            .add_answer_rr(
+                *HINTED_NAME,
+                Type::MX,
+                CLASS,
+                *TTL,
+                &rdata,
+                Some(&mut hint_pointer_vec),
+            )
+            .unwrap();
+        let explicitly_hinted = HintedName::from_hint_pointer_vec(&hint_pointer_vec, 0, &exchange);
+        writer
+            .add_additional_rrset(explicitly_hinted, TYPE, CLASS, *TTL, &RDATAS, None)
+            .unwrap();
+        let len = writer.finish();
+        assert_eq!(
+            &buf[0..len],
+            b"\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01\
+              \x08quandary\x04test\x00\x00\x0f\x00\x01\x00\x00\x0e\x10\x00\x14\
+              \x00\x0a\x02mx\x08quandary\x04test\x00\
+              \xc0\x27\x00\x01\x00\x01\x00\x00\x0e\x10\x00\x04\
+              \x7f\x00\x00\x01",
+        );
+    }
+
+    #[test]
     fn compression_can_be_disabled() {
         let mut buf = [0; 512];
         let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
@@ -1584,7 +1802,7 @@ mod tests {
         writer.add_question(&QUESTION).unwrap();
         let hinted_for_qname = HintedName::new(Hint::Qname, NAME.as_ref());
         writer
-            .add_answer_rrset(hinted_for_qname, TYPE, CLASS, *TTL, &RDATAS)
+            .add_answer_rrset(hinted_for_qname, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
         let len = writer.finish();
         assert_eq!(
@@ -1603,7 +1821,7 @@ mod tests {
         // Test an EDNS-only message.
         let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
         writer
-            .add_answer_rr(*HINTED_NAME, Type::A, CLASS, *TTL, &RDATA)
+            .add_answer_rr(*HINTED_NAME, Type::A, CLASS, *TTL, &RDATA, None)
             .unwrap();
         writer.set_edns(512).unwrap();
         writer.clear_rrs();
@@ -1612,7 +1830,7 @@ mod tests {
         // Test a TSIG-only message.
         let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
         writer
-            .add_answer_rr(*HINTED_NAME, Type::A, CLASS, *TTL, &RDATA)
+            .add_answer_rr(*HINTED_NAME, Type::A, CLASS, *TTL, &RDATA, None)
             .unwrap();
         writer.set_tsig(TSIG_MODE.clone(), TSIG_RR.clone()).unwrap();
         writer.clear_rrs();
@@ -1621,7 +1839,7 @@ mod tests {
         // Test an EDNS + TSIG message.
         let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
         writer
-            .add_answer_rr(*HINTED_NAME, Type::A, CLASS, *TTL, &RDATA)
+            .add_answer_rr(*HINTED_NAME, Type::A, CLASS, *TTL, &RDATA, None)
             .unwrap();
         writer.set_edns(512).unwrap();
         writer.set_tsig(TSIG_MODE.clone(), TSIG_RR.clone()).unwrap();

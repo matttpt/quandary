@@ -1113,6 +1113,7 @@ mod tests {
                 QUESTION.qclass.into(),
                 Ttl::from(86400),
                 b"\x09It works!".try_into().unwrap(),
+                None,
             )
             .unwrap();
         let tsig_mode = TsigMode::Response {
@@ -1147,6 +1148,7 @@ mod tests {
                 QUESTION.qclass.into(),
                 Ttl::from(86400),
                 b"\x09It works!".try_into().unwrap(),
+                None,
             )
             .unwrap();
         let tsig_mode = TsigMode::Subsequent {

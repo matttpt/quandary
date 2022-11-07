@@ -22,7 +22,7 @@ use crate::db::catalog::{self, Catalog};
 use crate::db::zone::{
     LookupAddrsResult, LookupAllResult, LookupOptions, LookupResult, SingleRrset, Zone,
 };
-use crate::message::writer::{self, Hint, HintedName};
+use crate::message::writer::{self, Hint, HintPointerVec, HintedName};
 use crate::message::{Qclass, Qtype, Rcode, Writer};
 use crate::name::Name;
 use crate::rr::{Rdata, Ttl, Type};
@@ -130,14 +130,22 @@ where
         LookupResult::Found(found) => {
             context.source_of_synthesis = found.source_of_synthesis;
             context.response.set_aa(true);
+            let mut hint_pointer_vec = HintPointerVec::new();
             context.response.add_answer_rrset(
                 HintedName::new(Hint::Qname, qname),
                 rr_type,
                 zone.class(),
                 found.data.ttl,
                 &found.data.rdatas,
+                Some(&mut hint_pointer_vec),
             )?;
-            do_additional_section_processing(zone, rr_type, &found.data, &mut context.response)
+            do_additional_section_processing(
+                zone,
+                rr_type,
+                &found.data,
+                Some(&hint_pointer_vec),
+                &mut context.response,
+            )
         }
         LookupResult::Cname(cname) => {
             context.source_of_synthesis = cname.source_of_synthesis;
@@ -192,6 +200,7 @@ where
                     class,
                     rrset.ttl,
                     &rrset.rdatas,
+                    None,
                 )?;
                 n_added += 1;
             }
@@ -308,6 +317,7 @@ fn follow_cname_1(
                 zone.class(),
                 cname_rrset.ttl,
                 cname.wire_repr().try_into().unwrap(),
+                None,
             )?;
             follow_cname_2(zone, qname, cname, rr_type, response, owners_seen)
         }
@@ -342,14 +352,22 @@ fn follow_cname_2(
     // scrub_sanitize subroutine in Unbound.)
     match zone.lookup(&cname, rr_type, LookupOptions::default()) {
         LookupResult::Found(found) => {
+            let mut hint_pointer_vec = HintPointerVec::new();
             response.add_answer_rrset(
                 HintedName::new(Hint::MostRecentRdata, &cname),
                 rr_type,
                 zone.class(),
                 found.data.ttl,
                 &found.data.rdatas,
+                Some(&mut hint_pointer_vec),
             )?;
-            do_additional_section_processing(zone, rr_type, &found.data, response)
+            do_additional_section_processing(
+                zone,
+                rr_type,
+                &found.data,
+                Some(&hint_pointer_vec),
+                response,
+            )
         }
         LookupResult::Cname(next_cname) => {
             // The CNAME chain continues. If the CNAME chain is getting
@@ -407,12 +425,14 @@ fn do_referral(
     ns_rrset: &SingleRrset,
     response: &mut Writer,
 ) -> ProcessingResult<()> {
+    let mut hint_pointer_vec = HintPointerVec::new();
     response.add_authority_rrset(
         HintedName::new(Hint::None, child_zone),
         Type::NS,
         parent_zone.class(),
         ns_rrset.ttl,
         &ns_rrset.rdatas,
+        Some(&mut hint_pointer_vec),
     )?;
 
     // Now, we *must* include glue records for in-domain name servers;
@@ -434,20 +454,22 @@ fn do_referral(
     // servers fit—an allowance that we make use of here.
     let mut glues = Vec::new();
     let mut additionals = Vec::new();
-    for rdata in ns_rrset.rdatas.iter() {
+    for (index, rdata) in ns_rrset.rdatas.iter().enumerate() {
         let nsdname = read_name_from_rdata(rdata, 0)?;
         if nsdname.eq_or_subdomain_of(child_zone) {
-            glues.push(nsdname);
+            glues.push((index, nsdname));
         } else {
-            additionals.push(nsdname);
+            additionals.push((index, nsdname));
         }
     }
-    for nsdname in glues {
-        add_additional_addresses(parent_zone, &nsdname, true, response)?;
+    for (index, nsdname) in glues {
+        let hinted_nsdname = HintedName::from_hint_pointer_vec(&hint_pointer_vec, index, &nsdname);
+        add_additional_addresses(parent_zone, hinted_nsdname, true, response)?;
     }
-    for nsdname in additionals {
+    for (index, nsdname) in additionals {
+        let hinted_nsdname = HintedName::from_hint_pointer_vec(&hint_pointer_vec, index, &nsdname);
         execute_allowing_truncation(|| {
-            add_additional_addresses(parent_zone, &nsdname, true, response)
+            add_additional_addresses(parent_zone, hinted_nsdname, true, response)
         })?;
     }
     Ok(())
@@ -481,30 +503,37 @@ fn do_additional_section_processing(
     zone: &impl Zone,
     rr_type: Type,
     rrset: &SingleRrset,
+    hint_pointer_vec: Option<&HintPointerVec>,
     response: &mut Writer,
 ) -> ProcessingResult<()> {
     match rr_type {
         Type::MB | Type::MD | Type::MF | Type::NS => {
-            for rdata in rrset.rdatas.iter() {
+            for (index, rdata) in rrset.rdatas.iter().enumerate() {
                 let name = read_name_from_rdata(rdata, 0)?;
+                let hinted_name =
+                    HintedName::from_hint_pointer_vec_opt(hint_pointer_vec, index, &name);
                 execute_allowing_truncation(|| {
-                    add_additional_addresses(zone, &name, false, response)
+                    add_additional_addresses(zone, hinted_name, false, response)
                 })?;
             }
         }
         Type::MX => {
-            for rdata in rrset.rdatas.iter() {
+            for (index, rdata) in rrset.rdatas.iter().enumerate() {
                 let name = read_name_from_rdata(rdata, 2)?;
+                let hinted_name =
+                    HintedName::from_hint_pointer_vec_opt(hint_pointer_vec, index, &name);
                 execute_allowing_truncation(|| {
-                    add_additional_addresses(zone, &name, false, response)
+                    add_additional_addresses(zone, hinted_name, false, response)
                 })?;
             }
         }
         Type::SRV => {
-            for rdata in rrset.rdatas.iter() {
+            for (index, rdata) in rrset.rdatas.iter().enumerate() {
                 let name = read_name_from_rdata(rdata, 6)?;
+                let hinted_name =
+                    HintedName::from_hint_pointer_vec_opt(hint_pointer_vec, index, &name);
                 execute_allowing_truncation(|| {
-                    add_additional_addresses(zone, &name, false, response)
+                    add_additional_addresses(zone, hinted_name, false, response)
                 })?;
             }
         }
@@ -538,6 +567,7 @@ fn add_negative_caching_soa(zone: &impl Zone, response: &mut Writer) -> Processi
             zone.class(),
             ttl,
             soa_rdata,
+            None,
         )
         .map_err(Into::into)
 }
@@ -560,12 +590,12 @@ fn read_soa_minimum(rdata: &Rdata) -> ProcessingResult<u32> {
 // HELPERS - MISCELLEANEOUS                                           //
 ////////////////////////////////////////////////////////////////////////
 
-/// Looks up `name` in `zone` and adds any address (A or AAAA) RRsets
+/// Looks up `owner` in `zone` and adds any address (A or AAAA) RRsets
 /// found to the additional section of `response`. Note that, on error,
 /// some of the addresses may have been successfully written.
 fn add_additional_addresses(
     zone: &impl Zone,
-    name: &Name,
+    mut owner: HintedName,
     search_below_cuts: bool,
     response: &mut Writer,
 ) -> writer::Result<()> {
@@ -573,26 +603,26 @@ fn add_additional_addresses(
         unchecked: false,
         search_below_cuts,
     };
-    if let LookupAddrsResult::Found(found) = zone.lookup_addrs(name, lookup_options) {
-        let hint = if let Some(a_rrset) = found.data.a_rrset {
+    if let LookupAddrsResult::Found(found) = zone.lookup_addrs(owner.name(), lookup_options) {
+        if let Some(a_rrset) = found.data.a_rrset {
             response.add_additional_rrset(
-                HintedName::new(Hint::None, name),
+                owner,
                 Type::A,
                 zone.class(),
                 a_rrset.ttl,
                 &a_rrset.rdatas,
+                None,
             )?;
-            Hint::MostRecentOwner
-        } else {
-            Hint::None
-        };
+            owner = HintedName::new(Hint::MostRecentOwner, owner.name());
+        }
         if let Some(aaaa_rrset) = found.data.aaaa_rrset {
             response.add_additional_rrset(
-                HintedName::new(hint, name),
+                owner,
                 Type::AAAA,
                 zone.class(),
                 aaaa_rrset.ttl,
                 &aaaa_rrset.rdatas,
+                None,
             )?;
         }
     }
