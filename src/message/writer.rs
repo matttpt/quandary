@@ -79,8 +79,8 @@ pub struct Writer<'a> {
     ancount: u16,
     nscount: u16,
     arcount: u16,
-    most_recent_owner: Option<u16>,
-    most_recent_rdata: Option<u16>,
+    most_recent_owner: Option<HintPointer>,
+    most_recent_rdata: Option<HintPointer>,
     compression: bool,
     edns: Option<Edns>,
     tsig: Option<Tsig>,
@@ -109,8 +109,8 @@ pub struct Template {
     ancount: u16,
     nscount: u16,
     arcount: u16,
-    most_recent_owner: Option<u16>,
-    most_recent_rdata: Option<u16>,
+    most_recent_owner: Option<HintPointer>,
+    most_recent_rdata: Option<HintPointer>,
     compression: bool,
     edns: Option<Edns>,
     tsig: Option<Tsig>,
@@ -714,7 +714,7 @@ impl<'a> Writer<'a> {
         self.try_push_u32(ttl.into())?;
         self.try_push_u16(rdata.len() as u16)?;
 
-        self.most_recent_rdata = (self.cursor <= POINTER_MAX).then_some(self.cursor as u16);
+        self.most_recent_rdata = HintPointer::new(self.cursor);
         for component in rdata.components(rr_type) {
             let component = component.or(Err(Error::InvalidRdata))?;
             match component {
@@ -948,7 +948,7 @@ impl<'a> Writer<'a> {
     /// cursor, compressing it using the provided hint if possible.
     /// On success, possibly returns a pointer an occurrence of the
     /// name. (This may or may not be the occurrence just written.)
-    fn write_hinted_name(&mut self, hinted_name: HintedName) -> Result<Option<u16>> {
+    fn write_hinted_name(&mut self, hinted_name: HintedName) -> Result<Option<HintPointer>> {
         // Compression is not worth it if the name is no longer than a
         // two-octet pointer.
         if !self.compression || hinted_name.name.wire_repr().len() <= 2 {
@@ -958,29 +958,31 @@ impl<'a> Writer<'a> {
         match hinted_name.hint {
             Hint::Qname => {
                 if self.qdcount > 0 {
-                    self.try_push_u16(0xc00c).and(Ok(Some(0xc)))
+                    self.try_push_u16(0xc00c).and(Ok(HintPointer::new(0xc)))
                 } else {
                     self.write_unhinted_name(hinted_name.name)
                 }
             }
             Hint::MostRecentOwner => {
                 if let Some(pointer) = self.most_recent_owner {
-                    self.try_push_u16(0xc000 | pointer).and(Ok(Some(pointer)))
+                    self.try_push_u16(0xc000 | pointer.get())
+                        .and(Ok(Some(pointer)))
                 } else {
                     self.write_unhinted_name(hinted_name.name)
                 }
             }
             Hint::MostRecentRdata => {
                 if let Some(pointer) = self.most_recent_rdata {
-                    self.try_push_u16(0xc000 | pointer).and(Ok(Some(pointer)))
+                    self.try_push_u16(0xc000 | pointer.get())
+                        .and(Ok(Some(pointer)))
                 } else {
                     self.write_unhinted_name(hinted_name.name)
                 }
             }
-            Hint::Explicit(HintPointer(pointer)) => {
-                let pointer = pointer.get();
-                if (pointer as usize) < self.cursor && pointer <= (POINTER_MAX as u16) {
-                    self.try_push_u16(0xc000 | pointer).and(Ok(Some(pointer)))
+            Hint::Explicit(pointer) => {
+                if (pointer.get() as usize) < self.cursor {
+                    self.try_push_u16(0xc000 | pointer.get())
+                        .and(Ok(Some(pointer)))
                 } else {
                     self.write_unhinted_name(hinted_name.name)
                 }
@@ -993,8 +995,8 @@ impl<'a> Writer<'a> {
     /// cursor, without compression. On success, returns a pointer to
     /// the occurrence of the name just written if the cursor was small
     /// enough.
-    fn write_unhinted_name(&mut self, name: &Name) -> Result<Option<u16>> {
-        let pointer = (self.cursor <= POINTER_MAX).then_some(self.cursor as u16);
+    fn write_unhinted_name(&mut self, name: &Name) -> Result<Option<HintPointer>> {
+        let pointer = HintPointer::new(self.cursor);
         self.try_push(name.wire_repr())?;
         Ok(pointer)
     }
@@ -1160,13 +1162,23 @@ pub enum Hint {
 pub struct HintPointer(NonZeroU16);
 
 impl HintPointer {
-    /// Creates a new `HintPointer`.
-    fn new(cursor: usize) -> Option<Self> {
+    /// Creates a new `HintPointer`. This will return `None` for zero
+    /// values or values that are greater than [`POINTER_MAX`].
+    const fn new(cursor: usize) -> Option<Self> {
         if cursor <= POINTER_MAX {
-            NonZeroU16::new(cursor as u16).map(Self)
+            if let Some(nonzero) = NonZeroU16::new(cursor as u16) {
+                Some(Self(nonzero))
+            } else {
+                None
+            }
         } else {
             None
         }
+    }
+
+    /// Returns the pointer's value.
+    const fn get(self) -> u16 {
+        self.0.get()
     }
 }
 
@@ -1845,5 +1857,18 @@ mod tests {
         writer.set_tsig(TSIG_MODE.clone(), TSIG_RR.clone()).unwrap();
         writer.clear_rrs();
         assert_eq!(writer.arcount, 2);
+    }
+
+    #[test]
+    fn hint_pointer_constructor_accepts_valid_values() {
+        for pointer in 1..=POINTER_MAX {
+            assert!(HintPointer::new(pointer).is_some());
+        }
+    }
+
+    #[test]
+    fn hint_pointer_constructor_rejects_invalid_values() {
+        assert!(HintPointer::new(0).is_none());
+        assert!(HintPointer::new(POINTER_MAX + 1).is_none());
     }
 }
