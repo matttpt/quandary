@@ -159,7 +159,6 @@ fn try_running(run_args: RunArgs) -> Result<()> {
     if graceful_shutdown {
         thread_group.shut_down();
         thread_group.await_shutdown();
-        info!("Shutdown complete.");
     }
     Ok(())
 }
