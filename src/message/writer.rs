@@ -79,8 +79,9 @@ pub struct Writer<'a> {
     ancount: u16,
     nscount: u16,
     arcount: u16,
-    most_recent_owner: Option<HintPointer>,
-    most_recent_name_in_rdata: Option<HintPointer>,
+    qname: Option<PriorName>,
+    most_recent_owner: Option<PriorName>,
+    most_recent_name_in_rdata: Option<PriorName>,
     compression: bool,
     edns: Option<Edns>,
     tsig: Option<Tsig>,
@@ -109,8 +110,9 @@ pub struct Template {
     ancount: u16,
     nscount: u16,
     arcount: u16,
-    most_recent_owner: Option<HintPointer>,
-    most_recent_name_in_rdata: Option<HintPointer>,
+    qname: Option<PriorName>,
+    most_recent_owner: Option<PriorName>,
+    most_recent_name_in_rdata: Option<PriorName>,
     compression: bool,
     edns: Option<Edns>,
     tsig: Option<Tsig>,
@@ -124,6 +126,24 @@ enum Section {
     Answer,
     Authority,
     Additional,
+}
+
+/// Records where a name was written in a message and how many labels
+/// long it is.
+#[derive(Clone, Copy, Debug)]
+struct PriorName {
+    pointer: HintPointer,
+    len: u8,
+}
+
+impl PriorName {
+    /// Creates a new `PriorName`.
+    fn new(pointer: HintPointer, name: &Name) -> Self {
+        Self {
+            pointer,
+            len: name.len() as u8,
+        }
+    }
 }
 
 /// A type for recording EDNS information for a message until it is
@@ -200,6 +220,7 @@ impl<'a> Writer<'a> {
                 ancount: 0,
                 nscount: 0,
                 arcount: 0,
+                qname: None,
                 most_recent_owner: None,
                 most_recent_name_in_rdata: None,
                 compression: true,
@@ -222,6 +243,7 @@ impl<'a> Writer<'a> {
             ancount: self.ancount,
             nscount: self.nscount,
             arcount: self.arcount,
+            qname: self.qname,
             most_recent_owner: self.most_recent_owner,
             most_recent_name_in_rdata: self.most_recent_name_in_rdata,
             compression: self.compression,
@@ -300,6 +322,7 @@ impl<'a> Writer<'a> {
                 ancount: template.ancount,
                 nscount: template.nscount,
                 arcount: template.arcount,
+                qname: template.qname,
                 most_recent_owner: template.most_recent_owner,
                 most_recent_name_in_rdata: template.most_recent_name_in_rdata,
                 compression: template.compression,
@@ -499,7 +522,10 @@ impl<'a> Writer<'a> {
             Err(Error::OutOfOrder)
         } else if let Some(new_qdcount) = self.qdcount.checked_add(1) {
             self.with_rollback(|this| {
-                this.try_push(question.qname.wire_repr())?;
+                let qname = this.write_unhinted_name(&question.qname)?;
+                if this.qdcount == 0 {
+                    this.qname = qname;
+                }
                 this.try_push_u16(question.qtype.into())?;
                 this.try_push_u16(question.qclass.into())
             })?;
@@ -712,22 +738,39 @@ impl<'a> Writer<'a> {
         self.try_push_u16(rr_type.into())?;
         self.try_push_u16(class.into())?;
         self.try_push_u32(ttl.into())?;
-        self.try_push_u16(rdata.len() as u16)?;
 
+        // Save two octets for the RDLENGTH field. We must compute and
+        // write this field at the end, since it's affected by
+        // compression.
+        if self.available - self.cursor < 2 {
+            return Err(Error::Truncation);
+        }
+        let rdlength_start = self.cursor;
+        self.cursor += 2;
+
+        // Write RDATA with compression.
         for component in rdata.components(rr_type) {
             let component = component.or(Err(Error::InvalidRdata))?;
             match component {
-                Component::CompressibleName(name) | Component::UncompressibleName(name) => {
-                    self.most_recent_name_in_rdata = HintPointer::new(self.cursor);
+                Component::CompressibleName(name) => {
+                    self.most_recent_name_in_rdata = self.write_unhinted_name(&name)?;
                     if let Some(hint_pointer_vec) = hint_pointer_vec.as_deref_mut() {
-                        hint_pointer_vec.push(self.most_recent_name_in_rdata);
+                        hint_pointer_vec.push(self.most_recent_name_in_rdata.map(|n| n.pointer));
                     }
-                    self.try_push(name.wire_repr())?;
+                }
+                Component::UncompressibleName(name) => {
+                    self.most_recent_name_in_rdata = self.write_uncompressed_name(&name)?;
+                    if let Some(hint_pointer_vec) = hint_pointer_vec.as_deref_mut() {
+                        hint_pointer_vec.push(self.most_recent_name_in_rdata.map(|n| n.pointer));
+                    }
                 }
                 Component::Other(octets) => self.try_push(octets)?,
             }
         }
 
+        // Compute and write the RDLENTH field.
+        let rdlength = self.cursor - rdlength_start - 2;
+        self.write_u16(rdlength_start, rdlength as u16);
         Ok(())
     }
 
@@ -932,12 +975,14 @@ impl<'a> Writer<'a> {
     {
         let saved_section = self.section;
         let saved_cursor = self.cursor;
+        let saved_qname = self.qname;
         let saved_most_recent_owner = self.most_recent_owner;
         let saved_most_recent_name_in_rdata = self.most_recent_name_in_rdata;
         let result = f(self);
         if result.is_err() {
             self.section = saved_section;
             self.cursor = saved_cursor;
+            self.qname = saved_qname;
             self.most_recent_owner = saved_most_recent_owner;
             self.most_recent_name_in_rdata = saved_most_recent_name_in_rdata;
         }
@@ -945,60 +990,297 @@ impl<'a> Writer<'a> {
     }
 
     /// Writes a domain name to the underlying buffer at the current
-    /// cursor, compressing it using the provided hint if possible.
-    /// On success, possibly returns a pointer an occurrence of the
-    /// name. (This may or may not be the occurrence just written.)
-    fn write_hinted_name(&mut self, hinted_name: HintedName) -> Result<Option<HintPointer>> {
+    /// cursor, compressing it based on the provided hint if compression
+    /// is enabled and if the name is long enough to make it worthwhile.
+    fn write_hinted_name(&mut self, hinted_name: HintedName) -> Result<Option<PriorName>> {
         // Compression is not worth it if the name is no longer than a
         // two-octet pointer.
         if !self.compression || hinted_name.name.wire_repr().len() <= 2 {
-            return self.write_unhinted_name(hinted_name.name);
+            return self.write_uncompressed_name(hinted_name.name);
         }
 
         match hinted_name.hint {
             Hint::Qname => {
-                if self.qdcount > 0 {
-                    self.try_push_u16(0xc00c).and(Ok(HintPointer::new(0xc)))
+                if let Some(qname) = self.qname {
+                    self.try_push_u16(0xc000 | qname.pointer.get())
+                        .and(Ok(Some(qname)))
                 } else {
-                    self.write_unhinted_name(hinted_name.name)
+                    self.write_compressed_unhinted_name(hinted_name.name)
                 }
             }
             Hint::MostRecentOwner => {
-                if let Some(pointer) = self.most_recent_owner {
-                    self.try_push_u16(0xc000 | pointer.get())
-                        .and(Ok(Some(pointer)))
+                if let Some(most_recent_owner) = self.most_recent_owner {
+                    self.try_push_u16(0xc000 | most_recent_owner.pointer.get())
+                        .and(Ok(Some(most_recent_owner)))
                 } else {
-                    self.write_unhinted_name(hinted_name.name)
+                    self.write_compressed_unhinted_name(hinted_name.name)
                 }
             }
             Hint::MostRecentNameInRdata => {
-                if let Some(pointer) = self.most_recent_name_in_rdata {
-                    self.try_push_u16(0xc000 | pointer.get())
-                        .and(Ok(Some(pointer)))
+                if let Some(most_recent_name_in_rdata) = self.most_recent_name_in_rdata {
+                    self.try_push_u16(0xc000 | most_recent_name_in_rdata.pointer.get())
+                        .and(Ok(Some(most_recent_name_in_rdata)))
                 } else {
-                    self.write_unhinted_name(hinted_name.name)
+                    self.write_compressed_unhinted_name(hinted_name.name)
                 }
             }
             Hint::Explicit(pointer) => {
                 if (pointer.get() as usize) < self.cursor {
                     self.try_push_u16(0xc000 | pointer.get())
-                        .and(Ok(Some(pointer)))
+                        .and(Ok(Some(PriorName::new(pointer, hinted_name.name))))
                 } else {
-                    self.write_unhinted_name(hinted_name.name)
+                    self.write_compressed_unhinted_name(hinted_name.name)
                 }
             }
-            Hint::None => self.write_unhinted_name(hinted_name.name),
+            Hint::None => self.write_compressed_unhinted_name(hinted_name.name),
+        }
+    }
+
+    /// Writes a domain name without a hint to the underlying buffer at
+    /// the current cursor, trying to compress it if compression is
+    /// enabled and if the name is long enough to make it worthwhile.
+    fn write_unhinted_name(&mut self, name: &Name) -> Result<Option<PriorName>> {
+        // Compression is not worth it if the name is no longer than a
+        // two-octet pointer.
+        if self.compression && name.wire_repr().len() > 2 {
+            self.write_compressed_unhinted_name(name)
+        } else {
+            self.write_uncompressed_name(name)
         }
     }
 
     /// Writes a domain name to the underlying buffer at the current
-    /// cursor, without compression. On success, returns a pointer to
-    /// the occurrence of the name just written if the cursor was small
-    /// enough.
-    fn write_unhinted_name(&mut self, name: &Name) -> Result<Option<HintPointer>> {
+    /// cursor, always trying to compress it (even if compression is
+    /// disabled or if the name is too short to make it worthwhile).
+    fn write_compressed_unhinted_name(&mut self, compressee: &Name) -> Result<Option<PriorName>> {
+        // An authoritative server can generally provide compression
+        // hints for many of the record owners it writes to a message.
+        // Thus, it's more likely than not that we're being asked to
+        // compress a name in RDATA. Where might a similar name have
+        // already been written? Multi-record RRsets that contain domain
+        // names, for instance multi-record NS and MX RRsets, likely
+        // contain many *similar* names. Thus, there's a good chance
+        // that the name most recently written in RDATA is a similar
+        // name. Furthermore, there's a fair chance that the name is
+        // within the same zone as the record owner, e.g. an in-zone
+        // CNAME. Thus we can guess that the most recently written
+        // record owner or the QNAME are similar.
+        //
+        // It's still possible that we're asked to compress a record
+        // owner. For an authoritative server, it's very likely that
+        // the record owner is in the same zone as other record owners
+        // in the message or the QNAME, so we expect these to be
+        // similar. In particular, iteration algorithms for zone data
+        // structures often emit records of the same or similar names
+        // near one another. Thus, while AXFR does not *require* any
+        // particular record order, it's likely that RRs will be written
+        // such that the next record owner is equal to or very close to
+        // the last.
+        //
+        // To summarize, the name we're asked to write is probably close
+        // to the most recently written name in RDATA, the most recently
+        // written record owner, or the QNAME.
+        //
+        // Furthermore, for an authoritative server, it makes sense to
+        // prioritize the most recent owner over the QNAME. For a
+        // referral response for a delegation with in-zone name servers,
+        // the domain names in the RDATA will be subdomains of the
+        // record owner. Additionally, as explained above, using the
+        // most recent owner is effective with AXFR.
+        //
+        // On the basis of this analysis, and with a desire to make
+        // message serialization fast, we'll elect not to perform
+        // perfect compression. Instead, like Knot, we'll rely on
+        // heuristics. To avoid too much work, we'll try to compress the
+        // name against no more than two previously written names. Per
+        // the discussion above, those two should be (1) the most
+        // recently written owner, with the QNAME as a fallback; and (2)
+        // the name most recently written in RDATA. We'll do this by
+        // conceptually "lining up" the labels of the prior name(s) with
+        // those of the current name (the "compressee," if you will), as
+        // pictured:
+        //
+        // Column number:           -2  -1   0      1     2    3
+        //                       .---------------------------------
+        // Compressee:           |          www  example com (null)
+        // Most recent owner:    |               example com (null)
+        // Most recent in RDATA: | just one more example net (null)
+        //
+        // We then scan from left to right, starting with the column
+        // containing the compressee's first label (column 0). If the
+        // labels of a prior name start to match the compressee's, then
+        // we make a note of it. If they stop matching, then we clear
+        // our record of the match. At the end, we see if any matches
+        // are active. If so, then we compress using the longest one.
+        // During this whole process, the prior names are read directly
+        // from the message written so far.
+        //
+        // Let's get to it then!
+
+        // This structure keeps track of a single prior name that we're
+        // trying to compress against.
+        struct PriorCtx {
+            start_column: usize,
+            pointer: usize,
+            match_start: Option<MatchStart>,
+        }
+
+        // This structure keeps track of an active match against a prior
+        // name.
+        struct MatchStart {
+            start_column: usize,
+            prior_pointer: HintPointer,
+        }
+
+        // This advances a pointer to a label in a prior name until it's
+        // at the next "real" (i.e., non-pointer) label.
+        let move_to_next_real_label = |pointer: &mut usize| loop {
+            let len = self.octets[*pointer] as usize;
+            if len & 0xc0 == 0xc0 {
+                let next_pointer = ((len & 0x3f) << 8) | (self.octets[*pointer + 1] as usize);
+                if next_pointer < *pointer {
+                    *pointer = next_pointer;
+                } else {
+                    panic!("invalid pointer found during compression; this is a bug");
+                }
+            } else {
+                return;
+            }
+        };
+
+        // This sets up the PriorCtx for a prior name. If the prior name
+        // is longer than the compressee, then we skip through labels
+        // until we get to the one that is in "column 0" per the diagram
+        // above.
+        let build_prior_ctx = |prior: PriorName| {
+            let prior_len = prior.len as usize;
+            let start_column = compressee.len().saturating_sub(prior_len);
+            let mut prior_pointer = prior.pointer.get() as usize;
+            if prior_len > compressee.len() {
+                let skip = prior_len - compressee.len();
+                for _ in 0..skip {
+                    // Writer code is careful not to store a pointer to
+                    // a label that is itself a pointer. Thus we'll
+                    // assume in the first iteration that prior_pointer
+                    // points to a real label.
+                    let label_len = self.octets[prior_pointer] as usize;
+                    prior_pointer += label_len + 1;
+                    move_to_next_real_label(&mut prior_pointer);
+                }
+            }
+            PriorCtx {
+                start_column,
+                pointer: prior_pointer,
+                match_start: None,
+            }
+        };
+
+        // Load the prior names.
+        let most_recent_owner_or_qname = self.most_recent_owner.or(self.qname);
+        if most_recent_owner_or_qname.is_none() && self.most_recent_name_in_rdata.is_none() {
+            return self.write_uncompressed_name(compressee);
+        }
+        let mut prior_ctxs = [
+            most_recent_owner_or_qname.map(build_prior_ctx),
+            self.most_recent_name_in_rdata.map(build_prior_ctx),
+        ];
+
+        // And here's the scan, finally!
+        for (column, compressee_label) in compressee.labels().take(compressee.len() - 1).enumerate()
+        {
+            // It often happens that both prior names eventually point
+            // back to the same place in the message. In that case, we
+            // can eliminate one to avoid doing the same thing twice.
+            if let (Some(a), Some(b)) = (&prior_ctxs[0], &prior_ctxs[1]) {
+                if a.pointer == b.pointer {
+                    match (&a.match_start, &b.match_start) {
+                        (Some(a), Some(b)) => {
+                            if a.start_column <= b.start_column {
+                                prior_ctxs[1] = None;
+                            } else {
+                                prior_ctxs[0] = None;
+                            }
+                        }
+                        (Some(_), None) => prior_ctxs[1] = None,
+                        (None, Some(_)) => prior_ctxs[0] = None,
+                        (None, None) => prior_ctxs[1] = None,
+                    }
+                }
+            }
+
+            for prior_ctx in &mut prior_ctxs {
+                let prior_ctx = match prior_ctx.as_mut() {
+                    Some(p) => p,
+                    None => continue,
+                };
+                if column < prior_ctx.start_column {
+                    continue;
+                }
+
+                let prior_label_len = self.octets[prior_ctx.pointer] as usize;
+                let prior_label_octets =
+                    &self.octets[prior_ctx.pointer + 1..prior_ctx.pointer + 1 + prior_label_len];
+                if let Some(prior_pointer) = HintPointer::new(prior_ctx.pointer) {
+                    if compressee_label
+                        .octets()
+                        .eq_ignore_ascii_case(prior_label_octets)
+                    {
+                        prior_ctx.match_start.get_or_insert(MatchStart {
+                            start_column: column,
+                            prior_pointer,
+                        });
+                    } else {
+                        prior_ctx.match_start = None;
+                    }
+                } else {
+                    // This case shouldn't actually happen, since we
+                    // only store prior names when they're early enough
+                    // in the message to be referenced.
+                    prior_ctx.match_start = None;
+                }
+
+                prior_ctx.pointer += 1 + prior_label_len;
+                move_to_next_real_label(&mut prior_ctx.pointer);
+            }
+        }
+
+        let longest_match = prior_ctxs
+            .iter()
+            .filter_map(|pc_opt| pc_opt.as_ref().and_then(|pc| pc.match_start.as_ref()))
+            .fold(None, |longest_so_far: Option<&MatchStart>, next| {
+                Some(longest_so_far.map_or(next, |longest_so_far| {
+                    if next.start_column < longest_so_far.start_column {
+                        next
+                    } else {
+                        longest_so_far
+                    }
+                }))
+            });
+
+        if let Some(longest_match) = longest_match {
+            if longest_match.start_column == 0 {
+                self.try_push_u16(0xc000 | longest_match.prior_pointer.get())?;
+                Ok(Some(PriorName::new(
+                    longest_match.prior_pointer,
+                    compressee,
+                )))
+            } else {
+                let pointer = HintPointer::new(self.cursor);
+                self.try_push(compressee.wire_repr_to(longest_match.start_column))?;
+                self.try_push_u16(0xc000 | longest_match.prior_pointer.get())?;
+                Ok(pointer.map(|pointer| PriorName::new(pointer, compressee)))
+            }
+        } else {
+            self.write_uncompressed_name(compressee)
+        }
+    }
+
+    /// Writes a domain name to the underlying buffer at the current
+    /// cursor, without compression.
+    fn write_uncompressed_name(&mut self, name: &Name) -> Result<Option<PriorName>> {
         let pointer = HintPointer::new(self.cursor);
         self.try_push(name.wire_repr())?;
-        Ok(pointer)
+        Ok(pointer.map(|pointer| PriorName::new(pointer, name)))
     }
 
     /// Tries to write `data` to the underlying buffer at the current
@@ -1362,7 +1644,7 @@ mod tests {
             &buf[0..len],
             b"\x07\x03\x84\x00\x00\x01\x00\x01\x00\x00\x00\x00\
               \x08quandary\x04test\x00\x00\x01\x00\x01\
-              \x08quandary\x04test\x00\x00\x01\x00\x01\x00\x00\x0e\x10\x00\x04\
+              \xc0\x0c\x00\x01\x00\x01\x00\x00\x0e\x10\x00\x04\
               \x7f\x00\x00\x01"
         );
     }
@@ -1773,8 +2055,8 @@ mod tests {
         assert_eq!(
             &buf[0..len],
             b"\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\
-              \x08quandary\x04test\x00\x00\x05\x00\x01\x00\x00\x0e\x10\x00\x10\
-              \x09canonical\x04test\x00\
+              \x08quandary\x04test\x00\x00\x05\x00\x01\x00\x00\x0e\x10\x00\x0c\
+              \x09canonical\xc0\x15\
               \xc0\x25\x00\x01\x00\x01\x00\x00\x0e\x10\x00\x04\
               \x7f\x00\x00\x01",
         );
@@ -1805,8 +2087,8 @@ mod tests {
         assert_eq!(
             &buf[0..len],
             b"\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01\
-              \x08quandary\x04test\x00\x00\x0f\x00\x01\x00\x00\x0e\x10\x00\x14\
-              \x00\x0a\x02mx\x08quandary\x04test\x00\
+              \x08quandary\x04test\x00\x00\x0f\x00\x01\x00\x00\x0e\x10\x00\x07\
+              \x00\x0a\x02mx\xc0\x0c\
               \xc0\x27\x00\x01\x00\x01\x00\x00\x0e\x10\x00\x04\
               \x7f\x00\x00\x01",
         );
