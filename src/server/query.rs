@@ -308,7 +308,7 @@ fn follow_cname_1(
             Err(ProcessingError::ServFail)
         } else {
             let hinted_owner = match owners_seen.last() {
-                Some(owner) => HintedName::new(Hint::MostRecentRdata, owner),
+                Some(owner) => HintedName::new(Hint::MostRecentNameInRdata, owner),
                 None => HintedName::new(Hint::Qname, qname),
             };
             response.add_answer_rr(
@@ -354,7 +354,7 @@ fn follow_cname_2(
         LookupResult::Found(found) => {
             let mut hint_pointer_vec = HintPointerVec::new();
             response.add_answer_rrset(
-                HintedName::new(Hint::MostRecentRdata, &cname),
+                HintedName::new(Hint::MostRecentNameInRdata, &cname),
                 rr_type,
                 zone.class(),
                 found.data.ttl,

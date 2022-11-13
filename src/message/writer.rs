@@ -80,7 +80,7 @@ pub struct Writer<'a> {
     nscount: u16,
     arcount: u16,
     most_recent_owner: Option<HintPointer>,
-    most_recent_rdata: Option<HintPointer>,
+    most_recent_name_in_rdata: Option<HintPointer>,
     compression: bool,
     edns: Option<Edns>,
     tsig: Option<Tsig>,
@@ -110,7 +110,7 @@ pub struct Template {
     nscount: u16,
     arcount: u16,
     most_recent_owner: Option<HintPointer>,
-    most_recent_rdata: Option<HintPointer>,
+    most_recent_name_in_rdata: Option<HintPointer>,
     compression: bool,
     edns: Option<Edns>,
     tsig: Option<Tsig>,
@@ -201,7 +201,7 @@ impl<'a> Writer<'a> {
                 nscount: 0,
                 arcount: 0,
                 most_recent_owner: None,
-                most_recent_rdata: None,
+                most_recent_name_in_rdata: None,
                 compression: true,
                 edns: None,
                 tsig: None,
@@ -223,7 +223,7 @@ impl<'a> Writer<'a> {
             nscount: self.nscount,
             arcount: self.arcount,
             most_recent_owner: self.most_recent_owner,
-            most_recent_rdata: self.most_recent_rdata,
+            most_recent_name_in_rdata: self.most_recent_name_in_rdata,
             compression: self.compression,
             edns: self.edns,
             tsig: self.tsig,
@@ -301,7 +301,7 @@ impl<'a> Writer<'a> {
                 nscount: template.nscount,
                 arcount: template.arcount,
                 most_recent_owner: template.most_recent_owner,
-                most_recent_rdata: template.most_recent_rdata,
+                most_recent_name_in_rdata: template.most_recent_name_in_rdata,
                 compression: template.compression,
                 edns: template.edns.clone(),
                 tsig,
@@ -714,13 +714,13 @@ impl<'a> Writer<'a> {
         self.try_push_u32(ttl.into())?;
         self.try_push_u16(rdata.len() as u16)?;
 
-        self.most_recent_rdata = HintPointer::new(self.cursor);
         for component in rdata.components(rr_type) {
             let component = component.or(Err(Error::InvalidRdata))?;
             match component {
                 Component::CompressibleName(name) | Component::UncompressibleName(name) => {
+                    self.most_recent_name_in_rdata = HintPointer::new(self.cursor);
                     if let Some(hint_pointer_vec) = hint_pointer_vec.as_deref_mut() {
-                        hint_pointer_vec.push(HintPointer::new(self.cursor));
+                        hint_pointer_vec.push(self.most_recent_name_in_rdata);
                     }
                     self.try_push(name.wire_repr())?;
                 }
@@ -774,7 +774,7 @@ impl<'a> Writer<'a> {
         self.cursor = self.rr_start;
         self.section = Section::Question;
         self.most_recent_owner = None;
-        self.most_recent_rdata = None;
+        self.most_recent_name_in_rdata = None;
     }
 
     /// Makes this an EDNS message. This will reserve space at the end
@@ -933,13 +933,13 @@ impl<'a> Writer<'a> {
         let saved_section = self.section;
         let saved_cursor = self.cursor;
         let saved_most_recent_owner = self.most_recent_owner;
-        let saved_most_recent_rdata = self.most_recent_rdata;
+        let saved_most_recent_name_in_rdata = self.most_recent_name_in_rdata;
         let result = f(self);
         if result.is_err() {
             self.section = saved_section;
             self.cursor = saved_cursor;
             self.most_recent_owner = saved_most_recent_owner;
-            self.most_recent_rdata = saved_most_recent_rdata;
+            self.most_recent_name_in_rdata = saved_most_recent_name_in_rdata;
         }
         result
     }
@@ -971,8 +971,8 @@ impl<'a> Writer<'a> {
                     self.write_unhinted_name(hinted_name.name)
                 }
             }
-            Hint::MostRecentRdata => {
-                if let Some(pointer) = self.most_recent_rdata {
+            Hint::MostRecentNameInRdata => {
+                if let Some(pointer) = self.most_recent_name_in_rdata {
                     self.try_push_u16(0xc000 | pointer.get())
                         .and(Ok(Some(pointer)))
                 } else {
@@ -1137,9 +1137,15 @@ pub enum Hint {
     /// recently added to the message.
     MostRecentOwner,
 
-    /// The name appears at the beginning of the RDATA of the resource
-    /// record most recently added to the message.
-    MostRecentRdata,
+    /// The name is the most recent domain name known to have been
+    /// written embedded in RDATA.
+    ///
+    /// Note that names embedded in RDATA of TYPEs unknown to Quandary
+    /// are not detected. As support for new TYPEs is added, [`Writer`]
+    /// may begin to detect previously undetected names. Therefore, be
+    /// careful to use this hint only when you can prove that such
+    /// developments will not affect this hint's behavior.
+    MostRecentNameInRdata,
 
     /// The name was previously written at a recorded location; use the
     /// provided pointer.
@@ -1751,7 +1757,7 @@ mod tests {
     }
 
     #[test]
-    fn most_recent_rdata_hint_works() {
+    fn most_recent_name_in_rdata_hint_works() {
         let mut buf = [0; 512];
         let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
         let cname: Box<Name> = "canonical.test.".parse().unwrap();
@@ -1759,9 +1765,9 @@ mod tests {
         writer
             .add_answer_rr(*HINTED_NAME, Type::CNAME, CLASS, *TTL, cname_rdata, None)
             .unwrap();
-        let hinted_for_mrr = HintedName::new(Hint::MostRecentRdata, &cname);
+        let hinted_for_mrnir = HintedName::new(Hint::MostRecentNameInRdata, &cname);
         writer
-            .add_answer_rrset(hinted_for_mrr, TYPE, CLASS, *TTL, &RDATAS, None)
+            .add_answer_rrset(hinted_for_mrnir, TYPE, CLASS, *TTL, &RDATAS, None)
             .unwrap();
         let len = writer.finish();
         assert_eq!(
