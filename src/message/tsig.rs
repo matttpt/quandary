@@ -823,48 +823,51 @@ mod tests {
     use lazy_static::lazy_static;
 
     use crate::class::Class;
-    use crate::name::LowercaseName;
+    use crate::name::{LowercaseName, Name};
     use crate::rr::rdata::TimeSigned;
-    use crate::rr::{Ttl, Type};
+    use crate::rr::{Rdata, Ttl, Type};
 
     use super::super::writer::{Hint, HintedName, TsigMode};
-    use super::super::{ExtendedRcode, Question, Reader, Writer};
+    use super::super::{ExtendedRcode, Qtype, Question, Reader, Writer};
     use super::{Algorithm, PreparedTsigRr, ReadTsigRr, VerificationError};
 
+    // The following TSIG-signed DNS messages are an AXFR request and
+    // the first two messages of the corresponding AXFR response, in
+    // that order. They were generated using BIND 9's dig and named
+    // with the "transfer-format one-answer" option.
     const REQUEST_WITH_TSIG: &[u8] =
-        b"\xa2\xe0\x00\x00\x00\x01\x00\x00\x00\x00\x00\x01\x08\x71\x75\x61\
-          \x6e\x64\x61\x72\x79\x04\x74\x65\x73\x74\x00\x00\x10\x00\x01\x01\
+        b"\x7a\xae\x00\x00\x00\x01\x00\x00\x00\x00\x00\x01\x08\x71\x75\x61\
+          \x6e\x64\x61\x72\x79\x04\x74\x65\x73\x74\x00\x00\xfc\x00\x01\x01\
           \x61\x04\x74\x73\x69\x67\x03\x6b\x65\x79\x00\x00\xfa\x00\xff\x00\
           \x00\x00\x00\x00\x3d\x0b\x68\x6d\x61\x63\x2d\x73\x68\x61\x32\x35\
-          \x36\x00\x00\x00\x63\x2b\x8d\xca\x01\x2c\x00\x20\xbb\x33\x6e\x57\
-          \x42\xa7\xa6\xce\x41\x37\x1b\x96\x84\x8b\x3b\x21\x26\x95\x94\x37\
-          \x15\xc2\xaa\xd9\x37\x9d\xd9\xaa\xaa\x75\x39\xb8\xa2\xe0\x00\x00\
+          \x36\x00\x00\x00\x63\x85\x22\x50\x01\x2c\x00\x20\x63\xe1\x08\x04\
+          \x14\x8f\x1c\x1c\x3d\x69\x98\x56\xa1\x89\x70\x28\x02\xbd\xe7\xea\
+          \x48\x2c\x0a\x7d\x04\xc7\x99\x4c\xeb\x2b\x60\xa5\x7a\xae\x00\x00\
           \x00\x00";
     const RESPONSE_WITH_TSIG: &[u8] =
-        b"\xa2\xe0\x84\x00\x00\x01\x00\x01\x00\x00\x00\x01\x08\x71\x75\x61\
-          \x6e\x64\x61\x72\x79\x04\x74\x65\x73\x74\x00\x00\x10\x00\x01\xc0\
-          \x0c\x00\x10\x00\x01\x00\x01\x51\x80\x00\x0a\x09\x49\x74\x20\x77\
-          \x6f\x72\x6b\x73\x21\x01\x61\x04\x74\x73\x69\x67\x03\x6b\x65\x79\
-          \x00\x00\xfa\x00\xff\x00\x00\x00\x00\x00\x3d\x0b\x68\x6d\x61\x63\
-          \x2d\x73\x68\x61\x32\x35\x36\x00\x00\x00\x63\x2b\x8d\xca\x01\x2c\
-          \x00\x20\xb9\x7f\x50\x3b\xd0\x93\x4d\xcf\x84\xf5\xf4\x89\xb5\xed\
-          \xde\x52\x7d\x28\x28\x32\xd5\xe1\xd8\x3c\x0a\xb2\x43\xb6\x43\x9f\
-          \xc2\x56\xa2\xe0\x00\x00\x00\x00";
+        b"\x7a\xae\x84\x00\x00\x01\x00\x01\x00\x00\x00\x01\x08\x71\x75\x61\
+          \x6e\x64\x61\x72\x79\x04\x74\x65\x73\x74\x00\x00\xfc\x00\x01\xc0\
+          \x0c\x00\x06\x00\x01\x00\x00\x0e\x10\x00\x21\x02\x6e\x73\xc0\x0c\
+          \x05\x61\x64\x6d\x69\x6e\xc0\x0c\x00\x00\x00\x01\x00\x00\x0e\x10\
+          \x00\x00\x03\x84\x00\x01\x51\x80\x00\x00\x0e\x10\x01\x61\x04\x74\
+          \x73\x69\x67\x03\x6b\x65\x79\x00\x00\xfa\x00\xff\x00\x00\x00\x00\
+          \x00\x3d\x0b\x68\x6d\x61\x63\x2d\x73\x68\x61\x32\x35\x36\x00\x00\
+          \x00\x63\x85\x22\x50\x01\x2c\x00\x20\x81\xf5\xda\x70\x0a\x1f\x28\
+          \xbf\xe9\xb3\x3c\xe5\x61\x20\xc5\x36\xa7\x8e\xdc\x4d\xea\x5e\x5e\
+          \x85\xdd\xf7\xb8\x93\xce\xfc\xab\xfd\x7a\xae\x00\x00\x00\x00";
     const SUBSEQUENT_WITH_TSIG: &[u8] =
-        b"\xa2\xe0\x84\x00\x00\x01\x00\x01\x00\x00\x00\x01\x08\x71\x75\x61\
-          \x6e\x64\x61\x72\x79\x04\x74\x65\x73\x74\x00\x00\x10\x00\x01\xc0\
-          \x0c\x00\x10\x00\x01\x00\x01\x51\x80\x00\x0a\x09\x49\x74\x20\x77\
-          \x6f\x72\x6b\x73\x21\x01\x61\x04\x74\x73\x69\x67\x03\x6b\x65\x79\
-          \x00\x00\xfa\x00\xff\x00\x00\x00\x00\x00\x3d\x0b\x68\x6d\x61\x63\
-          \x2d\x73\x68\x61\x32\x35\x36\x00\x00\x00\x63\x2b\x8d\xca\x01\x2c\
-          \x00\x20\x6a\xf9\x43\x43\x70\x3b\x71\x8b\xf5\x36\xfa\x77\x4c\x23\
-          \x1f\x9b\xea\x56\x41\x7f\xa7\x17\x22\xd3\x07\x17\x25\x93\x6b\x2d\
-          \xd1\xc3\xa2\xe0\x00\x00\x00\x00";
+        b"\x7a\xae\x84\x00\x00\x00\x00\x01\x00\x00\x00\x01\x08\x71\x75\x61\
+          \x6e\x64\x61\x72\x79\x04\x74\x65\x73\x74\x00\x00\x02\x00\x01\x00\
+          \x00\x0e\x10\x00\x05\x02\x6e\x73\xc0\x0c\x01\x61\x04\x74\x73\x69\
+          \x67\x03\x6b\x65\x79\x00\x00\xfa\x00\xff\x00\x00\x00\x00\x00\x3d\
+          \x0b\x68\x6d\x61\x63\x2d\x73\x68\x61\x32\x35\x36\x00\x00\x00\x63\
+          \x85\x22\x50\x01\x2c\x00\x20\xb7\x06\x58\x44\xa8\x37\xfb\x75\xcd\
+          \xe5\x5a\x72\xa6\x84\x6f\xec\x3c\xd7\x49\x43\xd4\x99\x6c\x58\x96\
+          \x59\xe1\x20\x2d\xda\x30\xdc\x7a\xae\x00\x00\x00\x00";
 
-    const MESSAGE_ID: u16 = 0xa2e0;
+    const MESSAGE_ID: u16 = 0x7aae;
     const FUDGE: u16 = 300;
     const KEY: &[u8] = b"topsecret";
-    const PRIOR_MAC: &[u8] = &[0; 32];
 
     lazy_static! {
         static ref CORRUPTED_REQUEST_WITH_TSIG: Box<[u8]> = {
@@ -883,15 +886,16 @@ mod tests {
             corrupted
         };
         static ref KEY_NAME: Box<LowercaseName> = "a.tsig.key.".parse().unwrap();
-        static ref TIME_SIGNED: TimeSigned = TimeSigned::try_from_unix_time(1663798730).unwrap();
+        static ref TIME_SIGNED: TimeSigned = TimeSigned::try_from_unix_time(1669669456).unwrap();
         static ref TOO_EARLY: TimeSigned =
-            TimeSigned::try_from_unix_time(1663798730 - FUDGE as u64 - 1).unwrap();
+            TimeSigned::try_from_unix_time(1669669456 - FUDGE as u64 - 1).unwrap();
         static ref TOO_LATE: TimeSigned =
-            TimeSigned::try_from_unix_time(1663798730 + FUDGE as u64 + 1).unwrap();
+            TimeSigned::try_from_unix_time(1669669456 + FUDGE as u64 + 1).unwrap();
         static ref REQUEST_MAC: &'static [u8] = &REQUEST_WITH_TSIG[76..108];
+        static ref PRIOR_MAC: &'static [u8] = &RESPONSE_WITH_TSIG[121..153];
         static ref QUESTION: Question = Question {
             qname: "quandary.test.".parse().unwrap(),
-            qtype: Type::TXT.into(),
+            qtype: Qtype::AXFR,
             qclass: Class::IN.into(),
         };
     }
@@ -901,7 +905,9 @@ mod tests {
         rrs_to_skip: usize,
     ) -> (&'static [u8], ReadTsigRr<'static>) {
         let mut reader = Reader::try_from(message).unwrap();
-        reader.skip_question().unwrap();
+        for _ in 0..reader.qdcount() {
+            reader.skip_question().unwrap();
+        }
         for _ in 0..rrs_to_skip {
             reader.skip_rr().unwrap();
         }
@@ -1041,7 +1047,7 @@ mod tests {
         assert_eq!(
             tsig_rr.verify_subsequent(
                 message_up_to_tsig,
-                PRIOR_MAC,
+                &PRIOR_MAC,
                 Algorithm::HmacSha256,
                 KEY,
                 now
@@ -1106,13 +1112,15 @@ mod tests {
         writer.set_qr(true);
         writer.set_aa(true);
         writer.add_question(&QUESTION).unwrap();
+        let mname: Box<Name> = "ns.quandary.test.".parse().unwrap();
+        let rname: Box<Name> = "admin.quandary.test.".parse().unwrap();
         writer
             .add_answer_rr(
                 HintedName::new(Hint::Qname, &QUESTION.qname),
-                QUESTION.qtype.into(),
+                Type::SOA,
                 QUESTION.qclass.into(),
-                Ttl::from(86400),
-                b"\x09It works!".try_into().unwrap(),
+                Ttl::from(3600),
+                &Rdata::new_soa(&mname, &rname, 1, 3600, 900, 86400, 3600),
                 None,
             )
             .unwrap();
@@ -1140,19 +1148,18 @@ mod tests {
         writer.set_id(MESSAGE_ID);
         writer.set_qr(true);
         writer.set_aa(true);
-        writer.add_question(&QUESTION).unwrap();
         writer
             .add_answer_rr(
                 HintedName::new(Hint::Qname, &QUESTION.qname),
-                QUESTION.qtype.into(),
+                Type::NS,
                 QUESTION.qclass.into(),
-                Ttl::from(86400),
-                b"\x09It works!".try_into().unwrap(),
+                Ttl::from(3600),
+                b"\x02ns\x08quandary\x04test\x00".try_into().unwrap(),
                 None,
             )
             .unwrap();
         let tsig_mode = TsigMode::Subsequent {
-            prior_mac: PRIOR_MAC.into(),
+            prior_mac: (*PRIOR_MAC).into(),
             algorithm: Algorithm::HmacSha256,
             key: KEY.into(),
         };
