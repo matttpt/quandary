@@ -82,7 +82,7 @@ pub struct Writer<'a> {
     qname: Option<PriorName>,
     most_recent_owner: Option<PriorName>,
     most_recent_name_in_rdata: Option<PriorName>,
-    compression: bool,
+    compression_mode: CompressionMode,
     edns: Option<Edns>,
     tsig: Option<Tsig>,
 }
@@ -113,7 +113,7 @@ pub struct Template {
     qname: Option<PriorName>,
     most_recent_owner: Option<PriorName>,
     most_recent_name_in_rdata: Option<PriorName>,
-    compression: bool,
+    compression_mode: CompressionMode,
     edns: Option<Edns>,
     tsig: Option<Tsig>,
 }
@@ -144,6 +144,28 @@ impl PriorName {
             len: name.len() as u8,
         }
     }
+}
+
+/// How a [`Writer`] may (when allowed by the DNS standard) compress
+/// domain names in a message.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum CompressionMode {
+    /// Perform standard compression. Case is not preserved.
+    Standard,
+
+    /// Perform case-preserving compression. This is recommended for
+    /// AXFR; see [RFC 5936 § 3.4].
+    ///
+    /// [RFC 5936 § 3.4]: https://datatracker.ietf.org/doc/html/rfc5936#section-3.4
+    CasePreserving,
+
+    /// Do not compress domain names. However, note that
+    /// [RFC 1123 § 6.1.2.4] requires name servers to use compression
+    /// in responses, since it helps prevent truncation and retries over
+    /// TCP. (Even with EDNS, the point still stands.)
+    ///
+    /// [RFC 1123 § 6.1.2.4]: https://datatracker.ietf.org/doc/html/rfc1123#section-6.1.2.4
+    Disabled,
 }
 
 /// A type for recording EDNS information for a message until it is
@@ -223,7 +245,7 @@ impl<'a> Writer<'a> {
                 qname: None,
                 most_recent_owner: None,
                 most_recent_name_in_rdata: None,
-                compression: true,
+                compression_mode: CompressionMode::Standard,
                 edns: None,
                 tsig: None,
             })
@@ -246,7 +268,7 @@ impl<'a> Writer<'a> {
             qname: self.qname,
             most_recent_owner: self.most_recent_owner,
             most_recent_name_in_rdata: self.most_recent_name_in_rdata,
-            compression: self.compression,
+            compression_mode: self.compression_mode,
             edns: self.edns,
             tsig: self.tsig,
         }
@@ -325,7 +347,7 @@ impl<'a> Writer<'a> {
                 qname: template.qname,
                 most_recent_owner: template.most_recent_owner,
                 most_recent_name_in_rdata: template.most_recent_name_in_rdata,
-                compression: template.compression,
+                compression_mode: template.compression_mode,
                 edns: template.edns.clone(),
                 tsig,
             })
@@ -346,13 +368,13 @@ impl<'a> Writer<'a> {
         }
     }
 
-    /// Configures whether the `Writer` may (when allowed by the DNS
+    /// Configures how the `Writer` may (when allowed by the DNS
     /// standard) compress domain names in the message.
     ///
-    /// Compression is enabled by default. Changing this setting does
-    /// not affect domain names already written.
-    pub fn set_compression(&mut self, enabled: bool) {
-        self.compression = enabled;
+    /// Compression is enabled and case-insensitive by default. Changing
+    /// this setting does not affect domain names already written.
+    pub fn set_compression_mode(&mut self, mode: CompressionMode) {
+        self.compression_mode = mode;
     }
 
     /// Returns the current 16-bit ID of the message.
@@ -995,8 +1017,17 @@ impl<'a> Writer<'a> {
     fn write_hinted_name(&mut self, hinted_name: HintedName) -> Result<Option<PriorName>> {
         // Compression is not worth it if the name is no longer than a
         // two-octet pointer.
-        if !self.compression || hinted_name.name.wire_repr().len() <= 2 {
+        if self.compression_mode == CompressionMode::Disabled
+            || hinted_name.name.wire_repr().len() <= 2
+        {
             return self.write_uncompressed_name(hinted_name.name);
+        }
+
+        // The hints API doesn't require that the prior occurrence
+        // specified by the hint be equal case-sensitively. Therefore,
+        // we don't use hints in case-preserving compression mode.
+        if self.compression_mode == CompressionMode::CasePreserving {
+            return self.write_compressed_unhinted_name(hinted_name.name);
         }
 
         match hinted_name.hint {
@@ -1042,7 +1073,7 @@ impl<'a> Writer<'a> {
     fn write_unhinted_name(&mut self, name: &Name) -> Result<Option<PriorName>> {
         // Compression is not worth it if the name is no longer than a
         // two-octet pointer.
-        if self.compression && name.wire_repr().len() > 2 {
+        if self.compression_mode != CompressionMode::Disabled && name.wire_repr().len() > 2 {
             self.write_compressed_unhinted_name(name)
         } else {
             self.write_uncompressed_name(name)
@@ -1221,10 +1252,14 @@ impl<'a> Writer<'a> {
                 let prior_label_octets =
                     &self.octets[prior_ctx.pointer + 1..prior_ctx.pointer + 1 + prior_label_len];
                 if let Some(prior_pointer) = HintPointer::new(prior_ctx.pointer) {
-                    if compressee_label
-                        .octets()
-                        .eq_ignore_ascii_case(prior_label_octets)
-                    {
+                    let labels_equal = if self.compression_mode == CompressionMode::CasePreserving {
+                        compressee_label.octets() == prior_label_octets
+                    } else {
+                        compressee_label
+                            .octets()
+                            .eq_ignore_ascii_case(prior_label_octets)
+                    };
+                    if labels_equal {
                         prior_ctx.match_start.get_or_insert(MatchStart {
                             start_column: column,
                             prior_pointer,
@@ -2098,7 +2133,7 @@ mod tests {
     fn compression_can_be_disabled() {
         let mut buf = [0; 512];
         let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
-        writer.set_compression(false);
+        writer.set_compression_mode(CompressionMode::Disabled);
         writer.add_question(&QUESTION).unwrap();
         let hinted_for_qname = HintedName::new(Hint::Qname, NAME.as_ref());
         writer
@@ -2110,6 +2145,27 @@ mod tests {
             b"\x00\x00\x00\x00\x00\x01\x00\x01\x00\x00\x00\x00\
               \x08quandary\x04test\x00\x00\x01\x00\x01\
               \x08quandary\x04test\x00\x00\x01\x00\x01\x00\x00\x0e\x10\x00\x04\
+              \x7f\x00\x00\x01",
+        );
+    }
+
+    #[test]
+    fn case_preserving_compression_works() {
+        let mut buf = [0; 512];
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        writer.set_compression_mode(CompressionMode::CasePreserving);
+        writer.add_question(&QUESTION).unwrap();
+        let different_case: Box<Name> = "Quandary.test.".parse().unwrap();
+        let hinted_for_qname = HintedName::new(Hint::Qname, &different_case);
+        writer
+            .add_answer_rrset(hinted_for_qname, TYPE, CLASS, *TTL, &RDATAS, None)
+            .unwrap();
+        let len = writer.finish();
+        assert_eq!(
+            &buf[0..len],
+            b"\x00\x00\x00\x00\x00\x01\x00\x01\x00\x00\x00\x00\
+              \x08quandary\x04test\x00\x00\x01\x00\x01\
+              \x08Quandary\xc0\x15\x00\x01\x00\x01\x00\x00\x0e\x10\x00\x04\
               \x7f\x00\x00\x01",
         );
     }
