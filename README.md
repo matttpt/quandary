@@ -171,10 +171,11 @@ path        = "quandary.test.zone"  # Required. Relative paths are
                                     # interpreted relative to the
                                     # configuration file.
 
-# The tsig_keys table configures TSIG keys recognized by the server.
-[tsig_keys."domain.name.of.tsig.key."]
-algorithm = "hmac-sha256"       # Required; supports hmac-sha1 and hmac-sha256.
-secret    = "EncodedInBase64="  # Required.
+# The tsig_keys array configures TSIG keys recognized by the server.
+[[tsig_keys]]
+name      = "domain.name.of.tsig.key."  # Required.
+algorithm = "hmac-sha256"               # Required; supports hmac-sha1 and hmac-sha256.
+secret    = "EncodedInBase64="          # Required.
 ```
 
 ### Reloading
@@ -192,8 +193,8 @@ On systems that support it, Quandary checks the modification time of the
 configured zone files and does not reload them if they have not changed.
 
 Note that SIGHUP triggers only a data reload. Changes to the
-configuration file outside of the `zones` array and the `tsig_keys`
-table are not applied without a full restart.
+configuration file outside of the `zones` and `tsig_keys` arrays are not
+applied without a full restart.
 
 ### Logging
 

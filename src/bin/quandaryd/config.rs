@@ -14,7 +14,7 @@
 
 //! Implements the server configuration file.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt::{self, Write};
 use std::fs;
 use std::io;
@@ -62,6 +62,11 @@ pub fn load_from_path(path: impl AsRef<Path>, reloading: bool) -> Result<Config>
         bail!("the zone {name}/{class} is configured more than once");
     }
 
+    // Fail if a TSIG key is configured more than once.
+    if let Some(name) = find_duplicated_tsig_key(&config.tsig_keys) {
+        bail!("the TSIG key {name} is configured more than once");
+    }
+
     // When loading the configuration from a path, all zone file paths
     // are interpreted relative to the configuration file's directory.
     for zone_config in &mut config.zones {
@@ -106,7 +111,7 @@ pub fn load_from_args(args: RunArgs) -> Result<Config> {
         bind,
         io: default_io_provider_config(),
         server: None,
-        tsig_keys: HashMap::new(),
+        tsig_keys: Vec::new(),
         zones,
     };
     log_config_summary(&config);
@@ -121,6 +126,18 @@ fn find_duplicated_zone(zones: &[ZoneConfig]) -> Option<(&Name, Class)> {
         let pair = (zone.name.0.as_ref(), zone.class.0);
         if !zone_set.insert(pair) {
             return Some(pair);
+        }
+    }
+    None
+}
+
+/// Tries to find a duplicated TSIG key in the configuration.
+fn find_duplicated_tsig_key(tsig_keys: &[TsigKeyConfig]) -> Option<&Name> {
+    let mut key_name_set = HashSet::new();
+    for key in tsig_keys {
+        let key_name = key.name.0.as_ref();
+        if !key_name_set.insert(key_name) {
+            return Some(key_name);
         }
     }
     None
@@ -193,18 +210,13 @@ fn summarize_zones(zones: &[ZoneConfig], message: &mut String) {
 
 /// Produces the TSIG key summary for [`log_config_summary`] and
 /// [`log_zone_and_key_summary`].
-fn summarize_keys(tsig_keys: &HashMap<Box<ConfigName>, TsigKeyConfig>, message: &mut String) {
+fn summarize_keys(tsig_keys: &[TsigKeyConfig], message: &mut String) {
     if tsig_keys.is_empty() {
         message.push_str("none");
     } else {
         write!(message, "{} configured", tsig_keys.len()).unwrap();
-        let mut names_and_algorithms: Vec<_> = tsig_keys
-            .iter()
-            .map(|(name, config)| (&*name.0, config.algorithm))
-            .collect();
-        names_and_algorithms.sort_unstable_by_key(|&(name, _)| name);
-        for (name, algorithm) in names_and_algorithms {
-            write!(message, "\n  {} ({})", name, algorithm).unwrap();
+        for key in tsig_keys {
+            write!(message, "\n  {} ({})", key.name.0, key.algorithm).unwrap();
         }
     }
 }
@@ -223,7 +235,7 @@ pub struct Config {
     pub io: IoProviderConfig,
     pub server: Option<ServerConfig>,
     #[serde(default)]
-    pub tsig_keys: HashMap<Box<ConfigName>, TsigKeyConfig>,
+    pub tsig_keys: Vec<TsigKeyConfig>,
     pub zones: Vec<ZoneConfig>,
 }
 
@@ -392,6 +404,7 @@ pub struct RrlConfig {
 /// The configuration for a single TSIG key.
 #[derive(Clone, Debug, Deserialize)]
 pub struct TsigKeyConfig {
+    pub name: ConfigName,
     pub algorithm: ConfigAlgorithm,
     #[serde(deserialize_with = "deserialize_secret")]
     pub secret: Box<[u8]>,

@@ -14,7 +14,6 @@
 
 //! Implements the `run` command (i.e., running the server).
 
-use std::collections::HashMap;
 use std::fmt::Write;
 use std::path::Path;
 use std::process;
@@ -32,7 +31,7 @@ use quandary::server::{RrlParams, TsigKeyMap};
 use quandary::thread::ThreadGroup;
 
 use crate::args::RunArgs;
-use crate::config::{self, ConfigName, RrlConfig, ServerConfig, TsigKeyConfig, ZoneConfig};
+use crate::config::{self, RrlConfig, ServerConfig, TsigKeyConfig, ZoneConfig};
 use crate::zones::{self, Catalog};
 
 /// The specific [`Server`](quandary::server::Server) type we use.
@@ -202,11 +201,11 @@ fn configure_rrl(server: &mut Server, config: &RrlConfig) -> Result<()> {
     Ok(())
 }
 
-fn make_tsig_key_map(tsig_keys: HashMap<Box<ConfigName>, TsigKeyConfig>) -> Arc<TsigKeyMap> {
+fn make_tsig_key_map(tsig_keys: Vec<TsigKeyConfig>) -> Arc<TsigKeyMap> {
     Arc::new(
         tsig_keys
             .into_iter()
-            .map(|(name, config)| (name.0, (config.algorithm.into(), config.secret)))
+            .map(|config| (config.name.0, (config.algorithm.into(), config.secret)))
             .collect(),
     )
 }
@@ -238,7 +237,7 @@ fn reload_zones_and_keys(
     catalog: &Catalog,
 ) -> Result<Arc<Catalog>> {
     let (zone_configs, tsig_keys) = match reload_source {
-        ReloadSource::Args(zone_configs) => (zone_configs.clone(), HashMap::new()),
+        ReloadSource::Args(zone_configs) => (zone_configs.clone(), Vec::new()),
         ReloadSource::Config(path) => {
             let config =
                 config::load_from_path(path, true).context("failed to reload the configuration")?;
