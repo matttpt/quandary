@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use std::fmt::{self, Write};
 use std::fs;
 use std::io;
-use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -86,11 +86,11 @@ pub fn load_from_path(path: impl AsRef<Path>, reloading: bool) -> Result<Config>
 /// Loads the server configuration from the parsed command line
 /// arguments given by `args`.
 pub fn load_from_args(args: RunArgs) -> Result<Config> {
-    let bind = args.bind.unwrap_or_else(|| {
+    let bind = BindConfig::from(args.bind.unwrap_or_else(|| {
         let ip = args.ip.unwrap_or(DEFAULT_BIND_IP);
         let port = args.port.unwrap_or(DEFAULT_BIND_PORT);
         SocketAddr::new(ip, port)
-    });
+    }));
     let zones: Vec<_> = args
         .zones
         .into_iter()
@@ -164,11 +164,13 @@ fn log_config_summary(config: &Config) {
 
     let mut message = format!(
         "Configuration loaded:\n\
-         Bind address: {}\n\
-         I/O provider: {}\n\
-         RRL:          {}\n\
-         Zones:        ",
-        config.bind,
+         TCP bind addresses: {}\n\
+         UDP bind addresses: {}\n\
+         I/O provider:       {}\n\
+         RRL:                {}\n\
+         Zones:              ",
+        config.bind.for_tcp(),
+        config.bind.for_udp(),
         config.io.name(),
         rrl_status,
     );
@@ -229,8 +231,8 @@ fn summarize_keys(tsig_keys: &[TsigKeyConfig], message: &mut String) {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    #[serde(default = "default_bind")]
-    pub bind: SocketAddr,
+    #[serde(default)]
+    pub bind: BindConfig,
     #[serde(default = "default_io_provider_config")]
     pub io: IoProviderConfig,
     pub server: Option<ServerConfig>,
@@ -239,11 +241,134 @@ pub struct Config {
     pub zones: Vec<ZoneConfig>,
 }
 
+////////////////////////////////////////////////////////////////////////
+// CONFIGURATION SECTION: BIND ADDRESSES                              //
+////////////////////////////////////////////////////////////////////////
+
+/// Configures the addresses to which the server will bind.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, untagged)]
+pub enum BindConfig {
+    Uniform(BindSpecs),
+    PerProtocol { tcp: BindSpecs, udp: BindSpecs },
+}
+
+/// One or more [`BindSpec`]s. This type exists so that Serde can parse
+/// either a single string or an array of strings where one or more
+/// [`BindSpec`]s are needed.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum BindSpecs {
+    Single(BindSpec),
+    Multiple(Vec<BindSpec>),
+}
+
+/// A single datum that specifies one or more addresses to which to
+/// bind.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum BindSpec {
+    /// A [`SocketAddr`] provided by default or parsed from the command
+    /// line. Serde does not parse this variant.
+    #[serde(skip)]
+    Addr(SocketAddr),
+
+    /// A [`String`] read from a configuration file that is converted
+    /// into addresses using [`String`]'s [`ToSocketAddrs`]
+    /// implementation. Serde always parses this variant.
+    String(String),
+}
+
+impl BindConfig {
+    /// Returns the [`BindSpecs`] for TCP.
+    fn for_tcp(&self) -> &BindSpecs {
+        match self {
+            Self::Uniform(specs) => specs,
+            Self::PerProtocol { tcp, .. } => tcp,
+        }
+    }
+
+    /// Returns the [`BindSpecs`] for UDP.
+    fn for_udp(&self) -> &BindSpecs {
+        match self {
+            Self::Uniform(specs) => specs,
+            Self::PerProtocol { udp, .. } => udp,
+        }
+    }
+}
+
 const DEFAULT_BIND_IP: IpAddr = IpAddr::V6(Ipv6Addr::LOCALHOST);
 const DEFAULT_BIND_PORT: u16 = 53;
 
-fn default_bind() -> SocketAddr {
-    SocketAddr::new(DEFAULT_BIND_IP, DEFAULT_BIND_PORT)
+impl Default for BindConfig {
+    fn default() -> Self {
+        Self::from(SocketAddr::new(DEFAULT_BIND_IP, DEFAULT_BIND_PORT))
+    }
+}
+
+impl From<SocketAddr> for BindConfig {
+    fn from(addr: SocketAddr) -> Self {
+        Self::Uniform(BindSpecs::Single(BindSpec::Addr(addr)))
+    }
+}
+
+impl BindSpecs {
+    /// Resolves all contained [`BindSpec`]s and collects the results.
+    /// See [`BindSpec::resolve`].
+    pub fn resolve(&self) -> Result<Vec<SocketAddr>> {
+        match self {
+            Self::Single(spec) => spec.resolve(),
+            Self::Multiple(specs) => {
+                let mut addrs = Vec::new();
+                for spec in specs {
+                    addrs.extend(spec.resolve()?);
+                }
+                Ok(addrs)
+            }
+        }
+    }
+}
+
+impl fmt::Display for BindSpecs {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Single(spec) => spec.fmt(f),
+            Self::Multiple(specs) => {
+                if specs.is_empty() {
+                    f.write_str("(none)")
+                } else {
+                    for spec in specs.iter().take(specs.len() - 1) {
+                        spec.fmt(f)?;
+                        f.write_str(", ")?;
+                    }
+                    specs.last().unwrap().fmt(f)
+                }
+            }
+        }
+    }
+}
+
+impl BindSpec {
+    /// Returns the addresses specified by the `BindSpec`, resolving
+    /// them if necessary.
+    fn resolve(&self) -> Result<Vec<SocketAddr>> {
+        match self {
+            Self::Addr(a) => Ok(vec![*a]),
+            Self::String(s) => s
+                .to_socket_addrs()
+                .map(Iterator::collect)
+                .with_context(|| format!("failed to resolve {s}")),
+        }
+    }
+}
+
+impl fmt::Display for BindSpec {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Addr(a) => a.fmt(f),
+            Self::String(s) => s.fmt(f),
+        }
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -280,12 +405,16 @@ impl IoProviderConfig {
     }
 
     /// Creates the selected I/O provider with this configuration and
-    /// binds it to the provided address.
-    pub fn bind_provider(&self, addr: SocketAddr) -> io::Result<Box<dyn IoProvider>> {
+    /// binds it to the provided addresses.
+    pub fn bind_provider<T, U>(&self, tcp_addrs: T, udp_addrs: U) -> io::Result<Box<dyn IoProvider>>
+    where
+        T: IntoIterator<Item = SocketAddr>,
+        U: IntoIterator<Item = SocketAddr>,
+    {
         match self {
             Self::Blocking(config) => {
                 let io_provider =
-                    quandary::io::BlockingIoProvider::bind(config.into(), [addr], [addr])?;
+                    quandary::io::BlockingIoProvider::bind(config.into(), tcp_addrs, udp_addrs)?;
                 Ok(Box::new(io_provider))
             }
         }
@@ -323,8 +452,8 @@ mod blocking_io {
         tcp_base_workers: usize,
         #[serde(default = "default_tcp_worker_linger")]
         tcp_worker_linger: u64,
-        #[serde(default = "default_udp_workers")]
-        udp_workers: usize,
+        #[serde(default = "default_udp_workers_per_socket")]
+        udp_workers_per_socket: usize,
     }
 
     fn default_tcp_base_workers() -> usize {
@@ -335,7 +464,7 @@ mod blocking_io {
         15
     }
 
-    fn default_udp_workers() -> usize {
+    fn default_udp_workers_per_socket() -> usize {
         2
     }
 
@@ -344,7 +473,7 @@ mod blocking_io {
             Self {
                 tcp_base_workers: default_tcp_base_workers(),
                 tcp_worker_linger: default_tcp_worker_linger(),
-                udp_workers: default_udp_workers(),
+                udp_workers_per_socket: default_udp_workers_per_socket(),
             }
         }
     }
@@ -354,7 +483,7 @@ mod blocking_io {
             Self {
                 tcp_base_workers: toml_config.tcp_base_workers,
                 tcp_worker_linger: Duration::from_secs(toml_config.tcp_worker_linger),
-                udp_workers_per_socket: toml_config.udp_workers,
+                udp_workers_per_socket: toml_config.udp_workers_per_socket,
             }
         }
     }

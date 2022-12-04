@@ -136,14 +136,23 @@ quandaryd run --config /etc/quandary/config.toml
 The following shows current configuration file parameters and defaults.
 
 ```toml
-bind = "[::1]:53"  # Required.
+# If present, configures the addresses to which the server will bind.
+bind = "[::1]:53"      # The default.
+bind = "localhost:53"  # Domain names are resolved; all addresses are used.
+
+# You can also provide an array:
+bind = ["127.0.0.1:53", "[::1]:53"]
+
+# You can even specify different addresses for TCP and UDP:
+bind.tcp = "[::]:53"
+bind.udp = ["localhost:53", "[::1]:5353"]
 
 # If present, configures the I/O subsystem.
 [io]
-provider          = "blocking"  # The only available provider for now.
-tcp_base_workers  = 4
-tcp_worker_linger = 15          # In seconds.
-udp_workers       = 2
+provider               = "blocking"  # The only available provider for now.
+tcp_base_workers       = 4
+tcp_worker_linger      = 15          # In seconds.
+udp_workers_per_socket = 2
 
 # If present, configures server options.
 [server]

@@ -14,7 +14,9 @@
 
 //! Implements the `run` command (i.e., running the server).
 
+use std::collections::HashSet;
 use std::fmt::Write;
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::process;
 use std::sync::atomic::AtomicBool;
@@ -31,7 +33,7 @@ use quandary::server::{RrlParams, TsigKeyMap};
 use quandary::thread::ThreadGroup;
 
 use crate::args::RunArgs;
-use crate::config::{self, RrlConfig, ServerConfig, TsigKeyConfig, ZoneConfig};
+use crate::config::{self, BindConfig, RrlConfig, ServerConfig, TsigKeyConfig, ZoneConfig};
 use crate::zones::{self, Catalog};
 
 /// The specific [`Server`](quandary::server::Server) type we use.
@@ -77,16 +79,47 @@ fn try_running(run_args: RunArgs) -> Result<()> {
         (config, reload_source)
     };
 
+    // Resolve any domain names in the bind address configuration.
+    let (tcp_addrs, udp_addrs) = match config.bind {
+        BindConfig::Uniform(specs) => {
+            let addrs = specs
+                .resolve()
+                .context("failed to resolve domain names in bind address configuration")?;
+            (addrs.clone(), addrs)
+        }
+        BindConfig::PerProtocol { tcp, udp } => {
+            let tcp_addrs = tcp
+                .resolve()
+                .context("failed to resolve domain names in TCP bind address configuration")?;
+            let udp_addrs = udp
+                .resolve()
+                .context("failed to resolve domain names in UDP bind address configuration")?;
+            (tcp_addrs, udp_addrs)
+        }
+    };
+
     // Before we bind, warn if we don't have local address selection but
     // need it to guarantee proper behavior.
-    if !SUPPORTS_LOCAL_ADDRESS_SELECTION && config.bind.ip().is_unspecified() {
-        warn!(
-            "The IP address to bind ({}) is an unspecified address. \
-             Local address selection is not supported on this target. \
-             If the system has more than one IP address, the server \
-             may use the wrong source address for UDP packets.",
-            config.bind.ip(),
-        );
+    if !SUPPORTS_LOCAL_ADDRESS_SELECTION {
+        let unspecified_udp_addrs: HashSet<_> = udp_addrs
+            .iter()
+            .map(SocketAddr::ip)
+            .filter(IpAddr::is_unspecified)
+            .collect();
+        if !unspecified_udp_addrs.is_empty() {
+            let addr_strings: Vec<_> = unspecified_udp_addrs
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            let addr_list = addr_strings.join(", ");
+            warn!(
+                "The server is configured to bind UDP sockets to one \
+                 or more unspecified addresses ({addr_list}). Local \
+                 address selection is not supported on this target. If \
+                 the system has more than one IP address, the server \
+                 may use the wrong source address for UDP packets.",
+            );
+        }
     }
 
     // Create/bind the I/O provider and set up the server. We want to do
@@ -94,7 +127,7 @@ fn try_running(run_args: RunArgs) -> Result<()> {
     // so it's better to fail fast.
     let io_provider = config
         .io
-        .bind_provider(config.bind)
+        .bind_provider(tcp_addrs, udp_addrs)
         .context("failed to bind sockets")?;
     let mut server = Server::new(Arc::new(Catalog::new()));
     if let Some(ref server_config) = config.server {
