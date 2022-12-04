@@ -284,7 +284,8 @@ impl IoProviderConfig {
     pub fn bind_provider(&self, addr: SocketAddr) -> io::Result<Box<dyn IoProvider>> {
         match self {
             Self::Blocking(config) => {
-                let io_provider = quandary::io::BlockingIoProvider::bind(config.into(), addr)?;
+                let io_provider =
+                    quandary::io::BlockingIoProvider::bind(config.into(), [addr], [addr])?;
                 Ok(Box::new(io_provider))
             }
         }
@@ -353,7 +354,7 @@ mod blocking_io {
             Self {
                 tcp_base_workers: toml_config.tcp_base_workers,
                 tcp_worker_linger: Duration::from_secs(toml_config.tcp_worker_linger),
-                udp_workers: toml_config.udp_workers,
+                udp_workers_per_socket: toml_config.udp_workers,
             }
         }
     }

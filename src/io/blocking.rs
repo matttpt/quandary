@@ -59,8 +59,8 @@ use crate::thread::{ThreadGroup, ThreadPool};
 /// currently available on **Unix** targets.
 pub struct BlockingIoProvider {
     config: BlockingIoConfig,
-    tcp_listener: TcpListener,
-    udp_socket: UdpSocket,
+    tcp_listeners: Vec<TcpListener>,
+    udp_sockets: Vec<UdpSocket>,
 }
 
 /// Configuration options for the [`BlockingIoProvider`].
@@ -74,8 +74,8 @@ pub struct BlockingIoConfig {
     /// new connection to serve before exiting.
     pub tcp_worker_linger: Duration,
 
-    /// The number of UDP worker threads to run.
-    pub udp_workers: usize,
+    /// The number of UDP worker threads to run for each UDP socket.
+    pub udp_workers_per_socket: usize,
 }
 
 impl BlockingIoProvider {
@@ -90,20 +90,32 @@ impl BlockingIoProvider {
     pub const SUPPORTS_GRACEFUL_SHUTDOWN: bool = TcpListener::POLL_ACCEPT_WORKS;
 
     /// Creates a new `BlockingIoProvider`. This call binds TCP and UDP
-    /// sockets to `addr` in preparation, but does not start the server.
-    pub fn bind(config: BlockingIoConfig, addr: SocketAddr) -> io::Result<Self> {
-        let tcp_listener = TcpListener::bind(addr)?;
-        if TcpListener::POLL_ACCEPT_WORKS {
-            tcp_listener.set_nonblocking(true)?;
+    /// sockets in preparation, but does not start the server.
+    pub fn bind<T, U>(config: BlockingIoConfig, tcp_addrs: T, udp_addrs: U) -> io::Result<Self>
+    where
+        T: IntoIterator<Item = SocketAddr>,
+        U: IntoIterator<Item = SocketAddr>,
+    {
+        let mut tcp_listeners = Vec::new();
+        for addr in tcp_addrs {
+            let listener = TcpListener::bind(addr)?;
+            if TcpListener::POLL_ACCEPT_WORKS {
+                listener.set_nonblocking(true)?;
+            }
+            tcp_listeners.push(listener);
         }
 
-        let udp_socket = UdpSocket::bind(addr)?;
-        udp_socket.set_read_timeout(Some(CHECK_FOR_SHUTDOWN_TIMEOUT))?;
+        let mut udp_sockets = Vec::new();
+        for addr in udp_addrs {
+            let socket = UdpSocket::bind(addr)?;
+            socket.set_read_timeout(Some(CHECK_FOR_SHUTDOWN_TIMEOUT))?;
+            udp_sockets.push(socket);
+        }
 
         Ok(Self {
             config,
-            tcp_listener,
-            udp_socket,
+            tcp_listeners,
+            udp_sockets,
         })
     }
 
@@ -126,24 +138,28 @@ impl BlockingIoProvider {
             self.config.tcp_base_workers,
             self.config.tcp_worker_linger,
         )?;
-        let tcp_listener_task = {
+        for (i, tcp_listener) in self.tcp_listeners.into_iter().enumerate() {
+            let name = format!("tcp listener {i}");
+            let tcp_workers = tcp_workers.clone();
             let server = server.clone();
-            move || {
-                log_io_errors(run_tcp_listener(&tcp_workers, &server, &self.tcp_listener));
-            }
-        };
-        group.start_respawnable(Some("tcp listener".to_owned()), tcp_listener_task)?;
-
-        // Start the UDP threads.
-        for i in 0..self.config.udp_workers {
-            let name = format!("udp worker {}", i);
-            let group_clone = group.clone();
-            let server = server.clone();
-            let udp_socket = self.udp_socket.clone();
             let task = move || {
-                log_io_errors(run_udp_worker(&group_clone, &server, udp_socket.clone()));
+                log_io_errors(run_tcp_listener(&tcp_workers, &server, &tcp_listener));
             };
             group.start_respawnable(Some(name), task)?;
+        }
+
+        // Start the UDP threads.
+        for (i, udp_socket) in self.udp_sockets.into_iter().enumerate() {
+            for j in 0..self.config.udp_workers_per_socket {
+                let name = format!("udp worker {i}/{j}");
+                let group_clone = group.clone();
+                let server = server.clone();
+                let udp_socket = udp_socket.clone();
+                let task = move || {
+                    log_io_errors(run_udp_worker(&group_clone, &server, udp_socket.clone()));
+                };
+                group.start_respawnable(Some(name), task)?;
+            }
         }
 
         Ok(())
