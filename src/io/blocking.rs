@@ -65,9 +65,6 @@ pub struct BlockingIoProvider {
 
 /// Configuration options for the [`BlockingIoProvider`].
 pub struct BlockingIoConfig {
-    /// The number of TCP listener threads to run.
-    pub tcp_listeners: usize,
-
     /// The base number of TCP worker threads to maintain. If more than
     /// this many TCP connections are established, a temporary auxiliary
     /// thread will be spawned for each additional connection.
@@ -123,24 +120,19 @@ impl BlockingIoProvider {
     where
         C: Catalog + Send + Sync + 'static,
     {
-        let tcp_listener = Arc::new(self.tcp_listener);
-
         // Start the TCP threads.
         let tcp_workers = group.start_pool(
             Some("tcp".to_owned()),
             self.config.tcp_base_workers,
             self.config.tcp_worker_linger,
         )?;
-        for i in 0..self.config.tcp_listeners {
-            let name = format!("tcp listener {}", i);
-            let tcp_workers = tcp_workers.clone();
+        let tcp_listener_task = {
             let server = server.clone();
-            let tcp_listener = tcp_listener.clone();
-            let task = move || {
-                log_io_errors(run_tcp_listener(&tcp_workers, &server, &tcp_listener));
-            };
-            group.start_respawnable(Some(name), task)?;
-        }
+            move || {
+                log_io_errors(run_tcp_listener(&tcp_workers, &server, &self.tcp_listener));
+            }
+        };
+        group.start_respawnable(Some("tcp listener".to_owned()), tcp_listener_task)?;
 
         // Start the UDP threads.
         for i in 0..self.config.udp_workers {
@@ -183,7 +175,7 @@ const READ_MESSAGE_TIMEOUT: Duration = Duration::from_secs(5);
 fn run_tcp_listener<C>(
     pool: &Arc<ThreadPool>,
     server: &Arc<Server<C>>,
-    listener: &Arc<TcpListener>,
+    listener: &TcpListener,
 ) -> io::Result<()>
 where
     C: Catalog + Send + Sync + 'static,

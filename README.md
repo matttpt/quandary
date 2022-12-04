@@ -141,7 +141,6 @@ bind = "[::1]:53"  # Required.
 # If present, configures the I/O subsystem.
 [io]
 provider          = "blocking"  # The only available provider for now.
-tcp_listeners     = 1
 tcp_base_workers  = 4
 tcp_worker_linger = 15          # In seconds.
 udp_workers       = 2

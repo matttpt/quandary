@@ -318,18 +318,12 @@ mod blocking_io {
     #[derive(Debug, Deserialize)]
     #[serde(deny_unknown_fields)]
     pub struct Config {
-        #[serde(default = "default_listeners")]
-        tcp_listeners: usize,
         #[serde(default = "default_tcp_base_workers")]
         tcp_base_workers: usize,
         #[serde(default = "default_tcp_worker_linger")]
         tcp_worker_linger: u64,
         #[serde(default = "default_udp_workers")]
         udp_workers: usize,
-    }
-
-    fn default_listeners() -> usize {
-        1
     }
 
     fn default_tcp_base_workers() -> usize {
@@ -347,7 +341,6 @@ mod blocking_io {
     impl Default for Config {
         fn default() -> Self {
             Self {
-                tcp_listeners: default_listeners(),
                 tcp_base_workers: default_tcp_base_workers(),
                 tcp_worker_linger: default_tcp_worker_linger(),
                 udp_workers: default_udp_workers(),
@@ -358,7 +351,6 @@ mod blocking_io {
     impl From<&Config> for BlockingIoConfig {
         fn from(toml_config: &Config) -> Self {
             Self {
-                tcp_listeners: toml_config.tcp_listeners,
                 tcp_base_workers: toml_config.tcp_base_workers,
                 tcp_worker_linger: Duration::from_secs(toml_config.tcp_worker_linger),
                 udp_workers: toml_config.udp_workers,
