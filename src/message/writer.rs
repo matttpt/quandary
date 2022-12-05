@@ -354,17 +354,22 @@ impl<'a> Writer<'a> {
         }
     }
 
-    /// Increases the size limit for the message to `limit`. If `limit`
-    /// is less than or equal to the current message size limit, then
-    /// nothing is done. If `limit` is greater than the size of the
-    /// underlying buffer, then the size limit is set to the underlying
-    /// buffer's size.
-    pub fn increase_limit(&mut self, new_limit: usize) {
-        if new_limit > self.limit {
+    /// Sets the size limit for the message as close to `new_limit` as
+    /// possible. Note that this method silently clamps the value: the
+    /// limit cannot be more than the underlying buffer's size and
+    /// cannot be less than the length of the message written so far,
+    /// plus any reserved space.
+    pub fn set_limit(&mut self, new_limit: usize) {
+        if new_limit >= self.limit {
             let new_limit = new_limit.min(self.octets.len());
             let increase = new_limit - self.limit;
             self.limit = new_limit;
             self.available += increase;
+        } else {
+            let new_limit = new_limit.max(self.cursor + self.limit - self.available);
+            let decrease = self.limit - new_limit;
+            self.limit = new_limit;
+            self.available -= decrease;
         }
     }
 
@@ -1938,29 +1943,34 @@ mod tests {
     }
 
     #[test]
-    fn increase_limit_works() {
+    fn set_limit_works() {
         let mut buf = [0; 1024];
         let mut writer = Writer::new(buf.as_mut_slice(), 512).unwrap();
         writer.available = 256;
-        writer.increase_limit(768);
+        writer.set_limit(768);
         assert_eq!(writer.limit, 768);
         assert_eq!(writer.available, 512);
-    }
-
-    #[test]
-    fn increase_limit_does_not_decrease_it() {
-        let mut buf = [0; 1024];
-        let mut writer = Writer::new(buf.as_mut_slice(), 512).unwrap();
-        writer.increase_limit(256);
+        writer.set_limit(512);
         assert_eq!(writer.limit, 512);
+        assert_eq!(writer.available, 256);
     }
 
     #[test]
-    fn increase_limit_caps_at_buffer_len() {
+    fn set_limit_caps_at_buffer_len() {
         let mut buf = [0; 1024];
         let mut writer = Writer::new(buf.as_mut_slice(), 512).unwrap();
-        writer.increase_limit(2048);
+        writer.set_limit(2048);
         assert_eq!(writer.limit, 1024);
+    }
+
+    #[test]
+    fn set_limit_respects_existing_data_and_reserved_octets() {
+        let mut buf = [0; 512];
+        let mut writer = Writer::try_from(buf.as_mut_slice()).unwrap();
+        writer.available = 384; // Reserves 512 - 384 = 128 octets.
+        writer.set_limit(0);
+        assert_eq!(writer.limit, 140); // 12 octets for the message header + 128 octets reserved.
+        assert_eq!(writer.available, 12);
     }
 
     #[test]

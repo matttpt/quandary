@@ -364,14 +364,13 @@ where
                 };
 
                 // For UDP transport, increase the message size limit if
-                // possible. Note that Response::increase_limit never
-                // *decreases* the limit, so we comply with
-                // RFC 6891 § 6.2.5's requirement to treat payload sizes
-                // less than 512 octets as equal to 512 octets.
+                // possible. Note that per RFC 6891 § 6.2.5, we must
+                // treat payload sizes less than 512 octets as equal to
+                // 512 octets.
                 if context.received_info.transport == Transport::Udp {
                     let their_limit = u16::from(opt_rr.class);
-                    let negotiated_limit = their_limit.min(self.edns_udp_payload_size);
-                    context.response.increase_limit(negotiated_limit as usize);
+                    let negotiated_limit = their_limit.min(self.edns_udp_payload_size).max(512);
+                    context.response.set_limit(negotiated_limit as usize);
                 }
 
                 if let Some(rcode) = validate_opt(&opt_rr) {
