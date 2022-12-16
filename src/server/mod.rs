@@ -369,7 +369,7 @@ where
                 // 512 octets.
                 if context.received_info.transport == Transport::Udp {
                     let their_limit = u16::from(opt_rr.class);
-                    let negotiated_limit = their_limit.min(self.edns_udp_payload_size).max(512);
+                    let negotiated_limit = their_limit.clamp(512, self.edns_udp_payload_size);
                     context.response.set_limit(negotiated_limit as usize);
                 }
 
