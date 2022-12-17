@@ -1,4 +1,4 @@
-FROM rust:1.65-bullseye AS builder
+FROM rust:1.66-bullseye AS builder
 RUN apt-get -y update && apt-get -y install libcap2-bin
 WORKDIR /usr/src/quandary
 COPY . .
