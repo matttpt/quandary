@@ -155,7 +155,7 @@ fn validate_character_string(octets: &[u8]) -> Result<usize, ReadRdataError> {
 
 /// Serializes an A record into the provided buffer.
 pub fn serialize_a(address: Ipv4Addr, buf: &mut Vec<u8>) {
-    buf.extend_from_slice(&address.octets())
+    buf.extend_from_slice(&address.octets());
 }
 
 impl Rdata {

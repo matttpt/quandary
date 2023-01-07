@@ -383,7 +383,7 @@ impl Ord for LabelBuf {
 
 impl Hash for LabelBuf {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.deref().hash(state)
+        self.deref().hash(state);
     }
 }
 
