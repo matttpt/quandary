@@ -498,6 +498,7 @@ fn do_referral(
 /// options that disable additional section processing altogether.
 ///
 /// [RFC 2782]: https://datatracker.ietf.org/doc/html/rfc2782
+/// [RFC 3596]: https://datatracker.ietf.org/doc/html/rfc3596
 /// [RFC 2181 § 9]: https://datatracker.ietf.org/doc/html/rfc2181#section-9
 fn do_additional_section_processing(
     zone: &impl Zone,
