@@ -18,6 +18,7 @@ use std::borrow::Cow;
 use std::fmt::{self, Write};
 
 use super::Type;
+use crate::class::Class;
 use crate::name::{self, Name};
 use crate::util::nibble_to_ascii_hex_digit;
 
@@ -63,7 +64,7 @@ impl Rdata {
     }
 
     /// Determines whether this [`Rdata`] is equal to another, assuming
-    /// that they are both of type `rr_type`.
+    /// that they are both of type `rr_type` in class `class`.
     ///
     /// [RFC 3597 § 6] specifies that RRs of unknown type are equal when
     /// their RDATA is bitwise equal, and that new RR types should not
@@ -85,7 +86,7 @@ impl Rdata {
     /// the default bitwise comparison.
     ///
     /// [RFC 3597 § 6]: https://datatracker.ietf.org/doc/html/rfc3597#section-6
-    pub fn equals(&self, other: &Self, rr_type: Type) -> bool {
+    pub fn equals(&self, other: &Self, class: Class, rr_type: Type) -> bool {
         match rr_type {
             Type::NS
             | Type::MD
@@ -98,15 +99,15 @@ impl Rdata {
             Type::SOA => self.equals_as_soa(other),
             Type::MINFO => self.equals_as_minfo(other),
             Type::MX => self.equals_as_mx(other),
-            Type::SRV => self.equals_as_srv(other),
+            Type::SRV if class == Class::IN => self.equals_as_in_srv(other),
             _ => self.octets == other.octets,
         }
     }
 
     /// Validates an [`Rdata`] for correctness, assuming that it is of
-    /// type `rr_type`. If the RR type is unknown, this is a successful
-    /// no-op.
-    pub fn validate(&self, rr_type: Type) -> Result<(), ReadRdataError> {
+    /// type `rr_type` in class `class`. If the class/type combination
+    /// is unknown, then this is a successful no-op.
+    pub fn validate(&self, class: Class, rr_type: Type) -> Result<(), ReadRdataError> {
         match rr_type {
             Type::NS
             | Type::MD
@@ -116,16 +117,16 @@ impl Rdata {
             | Type::MG
             | Type::MR
             | Type::PTR => helpers::validate_name(&self.octets),
-            Type::A => self.validate_as_a(),
+            Type::A if class == Class::IN => self.validate_as_in_a(),
             Type::SOA => self.validate_as_soa(),
             // For NULL, there is nothing to do!
-            Type::WKS => self.validate_as_wks(),
+            Type::WKS if class == Class::IN => self.validate_as_in_wks(),
             Type::HINFO => self.validate_as_hinfo(),
             Type::MINFO => self.validate_as_minfo(),
             Type::MX => self.validate_as_mx(),
             Type::TXT => self.validate_as_txt(),
-            Type::AAAA => self.validate_as_aaaa(),
-            Type::SRV => self.validate_as_srv(),
+            Type::AAAA if class == Class::IN => self.validate_as_in_aaaa(),
+            Type::SRV if class == Class::IN => self.validate_as_in_srv(),
             Type::OPT => self.validate_as_opt(),
             Type::TSIG => self.validate_as_tsig(),
             _ => Ok(()),
@@ -136,8 +137,9 @@ impl Rdata {
     /// decompressing any embedded domain names, if compressed domain
     /// names are allowed for the RR type.
     ///
-    /// RDATA of type `rr_type` and length `rdlength` is read starting
-    /// from `&message[cursor]`. The behavior is as follows:
+    /// RDATA of type `rr_type` in class `class` and of length
+    /// `rdlength` is read starting from `&message[cursor]`. The
+    /// behavior is as follows:
     ///
     /// * For recognized RR types that may contain embedded compressed
     ///   domain names, any such domain names are decompressed and the
@@ -165,6 +167,7 @@ impl Rdata {
     /// [RFC 1035]: https://datatracker.ietf.org/doc/html/rfc1035
     /// [RFC 3597 § 4]: https://datatracker.ietf.org/doc/html/rfc3597#section-4
     pub fn read(
+        class: Class,
         rr_type: Type,
         message: &[u8],
         cursor: usize,
@@ -189,16 +192,16 @@ impl Rdata {
             | Type::MG
             | Type::MR
             | Type::PTR => with_decompression(helpers::read_name_rdata),
-            Type::A => without_decompression(Self::validate_as_a),
+            Type::A if class == Class::IN => without_decompression(Self::validate_as_in_a),
             Type::SOA => with_decompression(Self::read_soa),
             // For NULL, there is no validation to do!
-            Type::WKS => without_decompression(Self::validate_as_wks),
+            Type::WKS if class == Class::IN => without_decompression(Self::validate_as_in_wks),
             Type::HINFO => without_decompression(Self::validate_as_hinfo),
             Type::MINFO => with_decompression(Self::read_minfo),
             Type::MX => with_decompression(Self::read_mx),
             Type::TXT => without_decompression(Self::validate_as_txt),
-            Type::AAAA => without_decompression(Self::validate_as_aaaa),
-            Type::SRV => with_decompression(Self::read_srv),
+            Type::AAAA if class == Class::IN => without_decompression(Self::validate_as_in_aaaa),
+            Type::SRV if class == Class::IN => with_decompression(Self::read_in_srv),
             Type::OPT => without_decompression(Self::validate_as_opt),
             Type::TSIG => without_decompression(Self::validate_as_tsig),
             _ => without_decompression(|_| Ok(())),
@@ -206,8 +209,8 @@ impl Rdata {
     }
 
     /// Returns an iterator over this `Rdata`'s [`Component`]s, assuming
-    /// that it is of type `rr_type`.
-    pub fn components(&self, rr_type: Type) -> Components {
+    /// that it is of type `rr_type` in class `class`.
+    pub fn components(&self, class: Class, rr_type: Type) -> Components {
         match rr_type {
             Type::NS
             | Type::MD
@@ -220,7 +223,7 @@ impl Rdata {
             Type::SOA => self.components_as_soa(),
             Type::MINFO => self.components_as_minfo(),
             Type::MX => self.components_as_mx(),
-            Type::SRV => self.components_as_srv(),
+            Type::SRV if class == Class::IN => self.components_as_in_srv(),
             _ => Components::for_nameless(self.octets()),
         }
     }
@@ -505,11 +508,14 @@ mod tests {
         // type-specific Rdata::read_* functions, the check occurs at
         // the beginning of those functions; for other RR types, it
         // occurs in Rdata::read itself. We test every possible RR type
-        // to ensure correct behavior in every case.
+        // in class IN to ensure correct behavior. (NOTE: if support for
+        // any class-specific types outside class IN is added, then this
+        // test should be updated to test those class/type combinations
+        // as well.)
         let too_short = [0; 4];
         for i in 0..=u16::MAX {
             assert!(matches!(
-                Rdata::read(Type::from(i), &too_short[..], 2, 4),
+                Rdata::read(Class::IN, Type::from(i), &too_short[..], 2, 4),
                 Err(ReadRdataError::UnexpectedEom),
             ));
         }

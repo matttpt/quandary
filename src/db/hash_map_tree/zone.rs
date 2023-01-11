@@ -107,7 +107,7 @@ impl HashMapTreeZone {
             let node = self
                 .apex
                 .get_or_create_descendant(owner, owner.len() - self.name().len());
-            node.data.rrsets.add(rr_type, ttl, rdata)
+            node.data.rrsets.add(class, rr_type, ttl, rdata)
         }
     }
 }

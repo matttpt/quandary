@@ -20,6 +20,7 @@
 use std::borrow::{Borrow, Cow};
 
 use super::Error;
+use crate::class::Class;
 use crate::db::zone::{IteratedRrset, SingleRrset};
 use crate::rr::{Rdata, RdataSetOwned, Ttl, Type};
 
@@ -67,17 +68,24 @@ impl RrsetList {
     /// rest of the records in its [`Rrset`].
     ///
     /// Note that this does not validate the [`Rdata`] with respect to
-    /// the [`Type`]. In addition, if the target [`Rrset`] exists and
-    /// already contains [`Rdata`] equal to the provided [`Rdata`] (see
-    /// [`Rdata::equals`]), then the new [`Rdata`] is silently ignored.
-    pub fn add(&mut self, rr_type: Type, ttl: Ttl, rdata: &Rdata) -> Result<(), Error> {
+    /// the [`Class`] or [`Type`]. In addition, if the target [`Rrset`]
+    /// exists and already contains [`Rdata`] equal to the provided
+    /// [`Rdata`] (see [`Rdata::equals`]), then the new [`Rdata`] is
+    /// silently ignored.
+    pub fn add(
+        &mut self,
+        class: Class,
+        rr_type: Type,
+        ttl: Ttl,
+        rdata: &Rdata,
+    ) -> Result<(), Error> {
         match self.rrsets.binary_search_by_key(&rr_type, |r| r.rr_type) {
             Ok(index) => {
                 let rrset = &mut self.rrsets[index];
                 if rrset.ttl != ttl {
                     Err(Error::TtlMismatch)
                 } else {
-                    rrset.rdatas.insert(rr_type, rdata);
+                    rrset.rdatas.insert(class, rr_type, rdata);
                     Ok(())
                 }
             }
@@ -122,9 +130,15 @@ mod tests {
         let loopback2: &Rdata = (&[127, 0, 0, 2]).try_into().unwrap();
         let domain: &Rdata = b"\x04test\x00".try_into().unwrap();
         let mut rrsets = RrsetList::default();
-        rrsets.add(Type::A, Ttl::from(3600), loopback1).unwrap();
-        rrsets.add(Type::A, Ttl::from(3600), loopback2).unwrap();
-        rrsets.add(Type::CNAME, Ttl::from(7200), domain).unwrap();
+        rrsets
+            .add(Class::IN, Type::A, Ttl::from(3600), loopback1)
+            .unwrap();
+        rrsets
+            .add(Class::IN, Type::A, Ttl::from(3600), loopback2)
+            .unwrap();
+        rrsets
+            .add(Class::IN, Type::CNAME, Ttl::from(7200), domain)
+            .unwrap();
 
         let a_rrset = rrsets.lookup(Type::A).unwrap();
         assert_eq!(
@@ -148,9 +162,11 @@ mod tests {
         let domain1: &Rdata = b"\x04test\x00".try_into().unwrap();
         let domain2: &Rdata = b"\x07invalid\x00".try_into().unwrap();
         let mut rrsets = RrsetList::default();
-        rrsets.add(Type::NS, Ttl::from(3600), domain1).unwrap();
+        rrsets
+            .add(Class::IN, Type::NS, Ttl::from(3600), domain1)
+            .unwrap();
         assert_eq!(
-            rrsets.add(Type::NS, Ttl::from(7200), domain2),
+            rrsets.add(Class::IN, Type::NS, Ttl::from(7200), domain2),
             Err(Error::TtlMismatch),
         );
     }

@@ -65,10 +65,11 @@ impl<S: Read> Parser<S> {
         let rr_type = self.parse_type()?;
 
         // The RDATA completes the record. What we expect to see next
-        // depends on the RR type, so parse_rdata performs the skip to
-        // the next field itself while providing the right error message
-        // for the type. This call also consumes the end of the line.
-        let rdata = self.parse_rdata(rr_type)?;
+        // depends on the RR's class and type, so parse_rdata performs
+        // the skip to the next field itself while providing the right
+        // error message for the type. This call also consumes the end
+        // of the line.
+        let rdata = self.parse_rdata(class, rr_type)?;
 
         // Update the context for the next record parsed.
         self.context.previous_owner = Some(owner.clone());
@@ -214,13 +215,14 @@ impl<S: Read> Parser<S> {
     // line ending. This makes sense because some RDATA formats (such as
     // for TXT records) do not have a fixed number of fields.
 
-    /// Parses RDATA for a record of type `rr_type`. Note that unlike
-    /// most of the zone file parsing methods, this method does *not*
-    /// require the caller to skip to the next field before use. This is
-    /// because the error message generation is handled in the callee,
-    /// since the message depends on `rr_type`. Furthermore, this method
-    /// expects and consumes a line ending after the RDATA.
-    fn parse_rdata(&mut self, rr_type: Type) -> Result<Box<Rdata>> {
+    /// Parses RDATA for a record of type `rr_type` in class `class`.
+    /// Note that unlike most of the zone file parsing methods, this
+    /// method does *not* require the caller to skip to the next field
+    /// before use. This is because the error message generation is
+    /// handled in the callee, since the message depends on `rr_type`
+    /// and `class`. Furthermore, this method expects and consumes a
+    /// line ending after the RDATA.
+    fn parse_rdata(&mut self, class: Class, rr_type: Type) -> Result<Box<Rdata>> {
         match rr_type {
             Type::NS
             | Type::MD
@@ -230,17 +232,18 @@ impl<S: Read> Parser<S> {
             | Type::MG
             | Type::MR
             | Type::PTR => self.parse_name_rdata(),
-            Type::A => self.parse_a_rdata(),
+            Type::A if class == Class::IN => self.parse_in_a_rdata(),
             Type::SOA => self.parse_soa_rdata(),
-            Type::WKS => self.parse_wks_rdata(),
+            Type::WKS if class == Class::IN => self.parse_in_wks_rdata(),
             Type::HINFO => self.parse_hinfo_rdata(),
             Type::MINFO => self.parse_minfo_rdata(),
             Type::MX => self.parse_mx_rdata(),
             Type::TXT => self.parse_txt_rdata(),
-            Type::AAAA => self.parse_aaaa_rdata(),
-            Type::SRV => self.parse_srv_rdata(),
+            Type::AAAA if class == Class::IN => self.parse_in_aaaa_rdata(),
+            Type::SRV if class == Class::IN => self.parse_in_srv_rdata(),
             _ => {
-                // Since we don't know the type, require the \# format.
+                // Since we don't recognize the class/type combination,
+                // require the \# format.
                 if !self.check_backslash_hash(ErrorKind::ExpectedBackslashHash)? {
                     return Err(Error::new(
                         self.reader.position(),
@@ -275,14 +278,14 @@ impl<S: Read> Parser<S> {
         }
     }
 
-    /// Parses RDATA for A records.
-    fn parse_a_rdata(&mut self) -> Result<Box<Rdata>> {
+    /// Parses RDATA for Internet A records.
+    fn parse_in_a_rdata(&mut self) -> Result<Box<Rdata>> {
         if self.check_backslash_hash(ErrorKind::ExpectedIpv4OrBh)? {
-            self.parse_unknown_rdata_with_validation(Rdata::validate_as_a)
+            self.parse_unknown_rdata_with_validation(Rdata::validate_as_in_a)
         } else {
             let ipv4: Ipv4Addr = self.reader.read_field(ErrorKind::InvalidIpv4)?;
             self.reader.expect_eol()?;
-            Ok(Rdata::new_a(ipv4))
+            Ok(Rdata::new_in_a(ipv4))
         }
     }
 
@@ -315,9 +318,9 @@ impl<S: Read> Parser<S> {
     ///
     /// Note that mneumonics for port numbers are not supported, and the
     /// only support mneumonics for IP protocols are `TCP` and `UDP`.
-    fn parse_wks_rdata(&mut self) -> Result<Box<Rdata>> {
+    fn parse_in_wks_rdata(&mut self) -> Result<Box<Rdata>> {
         if self.check_backslash_hash(ErrorKind::ExpectedIpv4OrBh)? {
-            self.parse_unknown_rdata_with_validation(Rdata::validate_as_wks)
+            self.parse_unknown_rdata_with_validation(Rdata::validate_as_in_wks)
         } else {
             let start_position = self.reader.position();
 
@@ -343,7 +346,7 @@ impl<S: Read> Parser<S> {
                 ports.push(port);
             }
 
-            Ok(Rdata::new_wks(address, protocol, &ports))
+            Ok(Rdata::new_in_wks(address, protocol, &ports))
         }
     }
 
@@ -412,20 +415,20 @@ impl<S: Read> Parser<S> {
     }
 
     /// Parses RDATA for AAAA records.
-    fn parse_aaaa_rdata(&mut self) -> Result<Box<Rdata>> {
+    fn parse_in_aaaa_rdata(&mut self) -> Result<Box<Rdata>> {
         if self.check_backslash_hash(ErrorKind::ExpectedIpv6OrBh)? {
-            self.parse_unknown_rdata_with_validation(Rdata::validate_as_aaaa)
+            self.parse_unknown_rdata_with_validation(Rdata::validate_as_in_aaaa)
         } else {
             let ipv6: Ipv6Addr = self.reader.read_field(ErrorKind::InvalidIpv6)?;
             self.reader.expect_eol()?;
-            Ok(Rdata::new_aaaa(ipv6))
+            Ok(Rdata::new_in_aaaa(ipv6))
         }
     }
 
     /// Parses RDATA for SRV records.
-    fn parse_srv_rdata(&mut self) -> Result<Box<Rdata>> {
+    fn parse_in_srv_rdata(&mut self) -> Result<Box<Rdata>> {
         if self.check_backslash_hash(ErrorKind::ExpectedU16OrBh)? {
-            self.parse_unknown_rdata_with_validation(Rdata::validate_as_srv)
+            self.parse_unknown_rdata_with_validation(Rdata::validate_as_in_srv)
         } else {
             let priority = self.reader.read_field(ErrorKind::InvalidInt)?;
             self.reader.skip_to_next_field(ErrorKind::ExpectedU16)?;
@@ -435,7 +438,7 @@ impl<S: Read> Parser<S> {
             self.reader.skip_to_next_field(ErrorKind::ExpectedName)?;
             let target = self.parse_name()?;
             self.reader.expect_eol()?;
-            Ok(Rdata::new_srv(priority, weight, port, &target))
+            Ok(Rdata::new_in_srv(priority, weight, port, &target))
         }
     }
 

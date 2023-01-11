@@ -150,25 +150,25 @@ fn validate_character_string(octets: &[u8]) -> Result<usize, ReadRdataError> {
 }
 
 ////////////////////////////////////////////////////////////////////////
-// RFC 1035 § 3.4.1 - A RDATA                                         //
+// RFC 1035 § 3.4.1 - INTERNET A RDATA                                //
 ////////////////////////////////////////////////////////////////////////
 
-/// Serializes an A record into the provided buffer.
-pub fn serialize_a(address: Ipv4Addr, buf: &mut Vec<u8>) {
+/// Serializes an Internet A record into the provided buffer.
+pub fn serialize_in_a(address: Ipv4Addr, buf: &mut Vec<u8>) {
     buf.extend_from_slice(&address.octets());
 }
 
 impl Rdata {
-    /// Serializes an A record into a new boxed [`Rdata`].
-    pub fn new_a(address: Ipv4Addr) -> Box<Self> {
+    /// Serializes an Internet A record into a new boxed [`Rdata`].
+    pub fn new_in_a(address: Ipv4Addr) -> Box<Self> {
         let mut buf = Vec::with_capacity(4);
-        serialize_a(address, &mut buf);
+        serialize_in_a(address, &mut buf);
         buf.try_into().unwrap()
     }
 
     /// Validates this [`Rdata`] for correctness, assuming that it is of
-    /// type A.
-    pub fn validate_as_a(&self) -> Result<(), ReadRdataError> {
+    /// type A in class IN.
+    pub fn validate_as_in_a(&self) -> Result<(), ReadRdataError> {
         if self.len() == 4 {
             Ok(())
         } else {
@@ -302,7 +302,7 @@ impl Rdata {
 ////////////////////////////////////////////////////////////////////////
 
 /// Serializes a WKS record into the provided buffer.
-pub fn serialize_wks(address: Ipv4Addr, protocol: u8, ports: &[u16], buf: &mut Vec<u8>) {
+pub fn serialize_in_wks(address: Ipv4Addr, protocol: u8, ports: &[u16], buf: &mut Vec<u8>) {
     let len = match ports.iter().max() {
         Some(highest_port) => (*highest_port as usize) / 8 + 1,
         None => 0,
@@ -321,15 +321,15 @@ pub fn serialize_wks(address: Ipv4Addr, protocol: u8, ports: &[u16], buf: &mut V
 
 impl Rdata {
     /// Serializes a WKS record into a new boxed [`Rdata`].
-    pub fn new_wks(address: Ipv4Addr, protocol: u8, ports: &[u16]) -> Box<Self> {
+    pub fn new_in_wks(address: Ipv4Addr, protocol: u8, ports: &[u16]) -> Box<Self> {
         let mut buf = Vec::new();
-        serialize_wks(address, protocol, ports, &mut buf);
+        serialize_in_wks(address, protocol, ports, &mut buf);
         buf.try_into().unwrap()
     }
 
     /// Validates this [`Rdata`] for correctness, assuming that it is of
     /// type WKS.
-    pub fn validate_as_wks(&self) -> Result<(), ReadRdataError> {
+    pub fn validate_as_in_wks(&self) -> Result<(), ReadRdataError> {
         if self.len() >= 5 {
             Ok(())
         } else {
@@ -639,9 +639,9 @@ mod tests {
     }
 
     #[test]
-    fn serialize_wks_works() {
+    fn serialize_in_wks_works() {
         let mut vec = Vec::new();
-        serialize_wks("127.0.0.1".parse().unwrap(), 6, &[80, 25], &mut vec);
+        serialize_in_wks("127.0.0.1".parse().unwrap(), 6, &[80, 25], &mut vec);
         assert_eq!(
             vec,
             b"\x7f\x00\x00\x01\x06\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x01"

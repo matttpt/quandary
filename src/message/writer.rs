@@ -776,7 +776,7 @@ impl<'a> Writer<'a> {
         self.cursor += 2;
 
         // Write RDATA with compression.
-        for component in rdata.components(rr_type) {
+        for component in rdata.components(class, rr_type) {
             let component = component.or(Err(Error::InvalidRdata))?;
             match component {
                 Component::CompressibleName(name) => {

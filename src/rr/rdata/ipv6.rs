@@ -25,21 +25,21 @@ use super::{Rdata, ReadRdataError};
 ////////////////////////////////////////////////////////////////////////
 
 /// Serializes an AAAA record into the provided buffer.
-pub fn serialize_aaaa(address: Ipv6Addr, buf: &mut Vec<u8>) {
+pub fn serialize_in_aaaa(address: Ipv6Addr, buf: &mut Vec<u8>) {
     buf.extend_from_slice(&address.octets());
 }
 
 impl Rdata {
     /// Serializes an AAAA record into a new boxed [`Rdata`].
-    pub fn new_aaaa(address: Ipv6Addr) -> Box<Self> {
+    pub fn new_in_aaaa(address: Ipv6Addr) -> Box<Self> {
         let mut buf = Vec::with_capacity(16);
-        serialize_aaaa(address, &mut buf);
+        serialize_in_aaaa(address, &mut buf);
         buf.try_into().unwrap()
     }
 
     /// Validates this [`Rdata`] for correctness, assuming that it is of
     /// type AAAA.
-    pub fn validate_as_aaaa(&self) -> Result<(), ReadRdataError> {
+    pub fn validate_as_in_aaaa(&self) -> Result<(), ReadRdataError> {
         if self.len() == 16 {
             Ok(())
         } else {

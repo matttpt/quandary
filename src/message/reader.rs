@@ -179,7 +179,13 @@ impl<'a> Reader<'a> {
         let class = read_u16(&self.octets[owner_end + 2..])?.into();
         let ttl = read_u32(&self.octets[owner_end + 4..])?.into();
         let rdlength = read_u16(&self.octets[owner_end + 8..])?;
-        let rdata = Rdata::read(rr_type, self.octets, self.cursor + owner_len + 10, rdlength)?;
+        let rdata = Rdata::read(
+            class,
+            rr_type,
+            self.octets,
+            self.cursor + owner_len + 10,
+            rdlength,
+        )?;
         self.cursor = owner_end + 10 + rdlength as usize;
         Ok(ReadRr {
             owner,
@@ -392,6 +398,7 @@ impl<'r, 'b> PeekRr<'r, 'b> {
     pub fn parse(mut self) -> Result<ReadRr<'b>> {
         let owner = self.take_owner()?;
         let rdata = Rdata::read(
+            self.class(),
             self.rr_type(),
             self.reader.octets,
             self.owner_end + 10,

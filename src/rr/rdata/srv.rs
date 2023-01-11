@@ -25,7 +25,7 @@ use crate::name::Name;
 ////////////////////////////////////////////////////////////////////////
 
 /// Serializes an SRV record into the provided buffer.
-pub fn serialize_srv(priority: u16, weight: u16, port: u16, target: &Name, buf: &mut Vec<u8>) {
+pub fn serialize_in_srv(priority: u16, weight: u16, port: u16, target: &Name, buf: &mut Vec<u8>) {
     buf.reserve(6 + target.wire_repr().len());
     buf.extend_from_slice(&priority.to_be_bytes());
     buf.extend_from_slice(&weight.to_be_bytes());
@@ -35,15 +35,15 @@ pub fn serialize_srv(priority: u16, weight: u16, port: u16, target: &Name, buf: 
 
 impl Rdata {
     /// Serializes an SRV record into a new boxed [`Rdata`].
-    pub fn new_srv(priority: u16, weight: u16, port: u16, target: &Name) -> Box<Self> {
+    pub fn new_in_srv(priority: u16, weight: u16, port: u16, target: &Name) -> Box<Self> {
         let mut buf = Vec::with_capacity(6 + target.wire_repr().len());
-        serialize_srv(priority, weight, port, target, &mut buf);
+        serialize_in_srv(priority, weight, port, target, &mut buf);
         buf.try_into().unwrap()
     }
 
     /// Validates this [`Rdata`] for correctness, assuming that it is of
     /// type SRV.
-    pub fn validate_as_srv(&self) -> Result<(), ReadRdataError> {
+    pub fn validate_as_in_srv(&self) -> Result<(), ReadRdataError> {
         if let Some(name_octets) = self.octets.get(6..) {
             Name::validate_uncompressed_all(name_octets).map_err(Into::into)
         } else {
@@ -52,7 +52,7 @@ impl Rdata {
     }
 
     /// Reads SRV RDATA from a message. See [`Rdata::read`] for details.
-    pub fn read_srv(
+    pub fn read_in_srv(
         message: &[u8],
         cursor: usize,
         rdlength: u16,
@@ -75,7 +75,7 @@ impl Rdata {
 
     /// Determines whether this [`Rdata`] is equal to another, assuming
     /// that both are of type SRV. See [`Rdata::equals`] for details.
-    pub fn equals_as_srv(&self, other: &Rdata) -> bool {
+    pub fn equals_as_in_srv(&self, other: &Rdata) -> bool {
         if self.len() != other.len() {
             false
         } else if self.len() > 6 {
@@ -93,7 +93,7 @@ impl Rdata {
     /// Returns an iterator over this `Rdata`'s
     /// [`Component`](super::Component)s, assuming that it is of type
     /// SRV.
-    pub fn components_as_srv(&self) -> Components {
+    pub fn components_as_in_srv(&self) -> Components {
         Components {
             types: &[
                 ComponentType::FixedLen(6),
