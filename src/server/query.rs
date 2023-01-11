@@ -489,8 +489,8 @@ fn do_referral(
 /// resolver must make by preemptively including address information
 /// that will very likely be needed next. Some later RFCs defining new
 /// RR types (e.g. [RFC 2782] for SRV) also ask for this behavior. With
-/// the advent of IPv6, [RFC 3596] includes AAAA records for IPv6
-/// addresses in additional section processing as well.
+/// the advent of IPv6, [RFC 3596] adds AAAA records for IPv6 addresses
+/// to additional section processing for the Internet class.
 ///
 /// Any address records are considered extra information, and should be
 /// omitted if there is insufficent room (see [RFC 2181 § 9]). In
@@ -507,6 +507,13 @@ fn do_additional_section_processing(
     hint_pointer_vec: Option<&HintPointerVec>,
     response: &mut Writer,
 ) -> ProcessingResult<()> {
+    let class = zone.class();
+    if class != Class::IN && class != Class::CH {
+        // We don't know of any address record types defined for this
+        // class.
+        return Ok(());
+    }
+
     match rr_type {
         Type::MB | Type::MD | Type::MF | Type::NS => {
             for (index, rdata) in rrset.rdatas.iter().enumerate() {
@@ -591,9 +598,9 @@ fn read_soa_minimum(rdata: &Rdata) -> ProcessingResult<u32> {
 // HELPERS - MISCELLEANEOUS                                           //
 ////////////////////////////////////////////////////////////////////////
 
-/// Looks up `owner` in `zone` and adds any address (A or AAAA) RRsets
-/// found to the additional section of `response`. Note that, on error,
-/// some of the addresses may have been successfully written.
+/// Looks up `owner` in `zone` and adds any address RRsets found to the
+/// additional section of `response`. Note that, on error, some of the
+/// addresses may have been successfully written.
 fn add_additional_addresses(
     zone: &impl Zone,
     mut owner: HintedName,
@@ -616,15 +623,17 @@ fn add_additional_addresses(
             )?;
             owner = HintedName::new(Hint::MostRecentOwner, owner.name());
         }
-        if let Some(aaaa_rrset) = found.data.aaaa_rrset {
-            response.add_additional_rrset(
-                owner,
-                Type::AAAA,
-                zone.class(),
-                aaaa_rrset.ttl,
-                &aaaa_rrset.rdatas,
-                None,
-            )?;
+        if zone.class() == Class::IN {
+            if let Some(aaaa_rrset) = found.data.aaaa_rrset {
+                response.add_additional_rrset(
+                    owner,
+                    Type::AAAA,
+                    Class::IN,
+                    aaaa_rrset.ttl,
+                    &aaaa_rrset.rdatas,
+                    None,
+                )?;
+            }
         }
     }
     Ok(())

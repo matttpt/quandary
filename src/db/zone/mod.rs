@@ -53,8 +53,15 @@ pub trait Zone {
     /// Looks up records of the given type at the provided domain name.
     fn lookup(&self, name: &Name, rr_type: Type, options: LookupOptions) -> LookupResult;
 
-    /// Looks up all address (A or AAAA) records at the provided domain
-    /// name.
+    /// Looks up all address records at the provided domain name.
+    ///
+    /// Implementations must return A records regardless of the zone's
+    /// class, and must also include AAAA records when the zone is in
+    /// the Internet (IN) class. As a best practice, when returning the
+    /// [`LookupAddrsResult::Found`] variant, implementations should
+    /// always set the [`Addresses::aaaa_rrset`] field to `None` when
+    /// the class is not IN. Likewise, callers should only access
+    /// the `aaaa_rrset` field when the class is IN.
     fn lookup_addrs(&self, name: &Name, options: LookupOptions) -> LookupAddrsResult;
 
     /// Looks up all records present at the provided domain name.

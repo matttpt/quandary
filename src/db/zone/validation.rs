@@ -66,11 +66,12 @@
 use std::collections::HashSet;
 use std::fmt;
 
+use crate::class::Class;
 use crate::name::Name;
 use crate::rr::Type;
 
 use super::super::Error;
-use super::{GluePolicy, IteratedRrset, LookupAddrsResult, LookupOptions, Zone};
+use super::{Addresses, Found, GluePolicy, IteratedRrset, LookupAddrsResult, LookupOptions, Zone};
 
 ////////////////////////////////////////////////////////////////////////
 // VALIDATION ISSUES                                                  //
@@ -160,12 +161,14 @@ where
 
     // Check 5: there must be at least one NS record for the zone.
     if let Some(ns_rrset) = zone.ns() {
-        for rdata in ns_rrset.rdatas.iter() {
-            // Part of check 8: nameservers for the zone must have
-            // address records if they are within the zone.
-            let name =
-                Name::try_from_uncompressed_all(rdata.octets()).or(Err(Error::InvalidRdata))?;
-            check_apex_ns_address(zone, name, &mut issues);
+        if class_has_addrs(zone.class()) {
+            for rdata in ns_rrset.rdatas.iter() {
+                // Part of check 8: nameservers for the zone must have
+                // address records if they are within the zone.
+                let name =
+                    Name::try_from_uncompressed_all(rdata.octets()).or(Err(Error::InvalidRdata))?;
+                check_apex_ns_address(zone, name, &mut issues);
+            }
         }
     } else {
         issues.insert(ValidationIssue::MissingApexNs);
@@ -202,15 +205,17 @@ where
                 }
             }
             Type::MX => {
-                // Perform the MX address check (9).
-                for rdata in rrset.rdatas.iter() {
-                    let name = rdata
-                        .octets()
-                        .get(2..)
-                        .map(Name::try_from_uncompressed_all)
-                        .and_then(Result::ok)
-                        .ok_or(Error::InvalidRdata)?;
-                    check_mx_address(zone, name, issues);
+                if class_has_addrs(zone.class()) {
+                    // Perform the MX address check (9).
+                    for rdata in rrset.rdatas.iter() {
+                        let name = rdata
+                            .octets()
+                            .get(2..)
+                            .map(Name::try_from_uncompressed_all)
+                            .and_then(Result::ok)
+                            .ok_or(Error::InvalidRdata)?;
+                        check_mx_address(zone, name, issues);
+                    }
                 }
             }
             Type::NS => {
@@ -224,7 +229,7 @@ where
                 //       since the implementation is easier this way.
                 //       But should we omit them?
                 let at_apex = owner.len() == zone.name().len();
-                if !at_apex {
+                if !at_apex && class_has_addrs(zone.class()) {
                     for rdata in rrset.rdatas.iter() {
                         let nsdname = Name::try_from_uncompressed_all(rdata.octets())
                             .or(Err(Error::InvalidRdata))?;
@@ -246,7 +251,7 @@ where
 {
     match zone.lookup_addrs(&nsdname, LookupOptions::default()) {
         LookupAddrsResult::Found(found) => {
-            if found.data.a_rrset.is_none() && found.data.aaaa_rrset.is_none() {
+            if !addrs_found(zone.class(), &found) {
                 issues.insert(ValidationIssue::MissingNsAddress(nsdname));
             }
         }
@@ -274,7 +279,7 @@ fn check_delegation_ns_address<Z>(
             // the parent zone itself. However, we ought to make sure
             // that the parent zone actually has addresses for the
             // nameserver! (This is check 8.)
-            if found.data.a_rrset.is_none() && found.data.aaaa_rrset.is_none() {
+            if !addrs_found(parent_zone.class(), &found) {
                 issues.insert(ValidationIssue::MissingNsAddress(nsdname));
             }
         }
@@ -322,7 +327,7 @@ where
     };
     match parent_zone.lookup_addrs(&nsdname, lookup_options) {
         LookupAddrsResult::Found(found) => {
-            if found.data.a_rrset.is_none() && found.data.aaaa_rrset.is_none() {
+            if !addrs_found(parent_zone.class(), &found) {
                 issues.insert(ValidationIssue::MissingGlue(nsdname));
             }
         }
@@ -340,7 +345,7 @@ where
 {
     match zone.lookup_addrs(&name, LookupOptions::default()) {
         LookupAddrsResult::Found(found) => {
-            if found.data.a_rrset.is_none() && found.data.aaaa_rrset.is_none() {
+            if !addrs_found(zone.class(), &found) {
                 issues.insert(ValidationIssue::MissingMxAddress(name));
             }
         }
@@ -349,6 +354,17 @@ where
         }
         LookupAddrsResult::Referral(_) | LookupAddrsResult::WrongZone => (),
     }
+}
+
+/// Returns whether address RR types are defined for a class.
+fn class_has_addrs(class: Class) -> bool {
+    class == Class::IN || class == Class::CH
+}
+
+/// Determines whether an address lookup found at least one acceptable
+/// address.
+fn addrs_found(class: Class, found: &Found<Addresses>) -> bool {
+    found.data.a_rrset.is_some() || (class == Class::IN && found.data.aaaa_rrset.is_some())
 }
 
 ////////////////////////////////////////////////////////////////////////

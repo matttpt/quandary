@@ -165,7 +165,11 @@ impl Zone for HashMapTreeZone {
                 source_of_synthesis,
             } => {
                 let a_rrset = data.rrsets.lookup(Type::A).map(SingleRrset::from);
-                let aaaa_rrset = data.rrsets.lookup(Type::AAAA).map(SingleRrset::from);
+                let aaaa_rrset = if self.class == Class::IN {
+                    data.rrsets.lookup(Type::AAAA).map(SingleRrset::from)
+                } else {
+                    None
+                };
                 LookupAddrsResult::Found(Found {
                     data: Addresses {
                         a_rrset,
