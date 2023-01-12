@@ -178,6 +178,104 @@ impl Rdata {
 }
 
 ////////////////////////////////////////////////////////////////////////
+// RFC 1034 § 3.6 - CHAOSNET A RDATA                                  //
+////////////////////////////////////////////////////////////////////////
+
+// The Chaosnet A RDATA format is not defined in RFC 1035, but it is
+// described briefly in RFC 1034 § 3.6 as "a domain name followed by a
+// 16 bit octal Chaos address." Since Chaosnet is a LAN technology, and
+// Chaosnet addresses are not unique among all Chaosnets, the domain
+// name indicates which particular Chaosnet LAN the address is in. See
+// https://mailarchive.ietf.org/arch/msg/dnsop/tJJ7GuY0qMMyxM7aqGYusZykB_8/
+// for some information about the Chaosnet A record's history.
+
+/// Serializes a Chaosnet A record into the provided buffer.
+pub fn serialize_ch_a(lan: &Name, address: u16, buf: &mut Vec<u8>) {
+    buf.reserve(lan.wire_repr().len() + 2);
+    buf.extend_from_slice(lan.wire_repr());
+    buf.extend_from_slice(&address.to_be_bytes());
+}
+
+impl Rdata {
+    /// Serializes a Chaosnet A record into a new boxed [`Rdata`].
+    pub fn new_ch_a(lan: &Name, address: u16) -> Box<Self> {
+        let mut buf = Vec::with_capacity(lan.wire_repr().len() + 2);
+        serialize_ch_a(lan, address, &mut buf);
+        buf.try_into().unwrap()
+    }
+
+    /// Validates this [`Rdata`], assuming that it is of type A in class
+    /// CH.
+    pub fn validate_as_ch_a(&self) -> Result<(), ReadRdataError> {
+        let lan_len = Name::validate_uncompressed(&self.octets)?;
+        if self.octets.len() == lan_len + 2 {
+            Ok(())
+        } else {
+            Err(ReadRdataError::Other)
+        }
+    }
+
+    /// Reads Chaosnet A RDATA from a message. See [`Rdata::read`] for
+    /// details.
+    pub fn read_ch_a(
+        message: &[u8],
+        cursor: usize,
+        rdlength: u16,
+    ) -> Result<Box<Rdata>, ReadRdataError> {
+        // RFC 3597 § 4 states that we MUST decompress names in RDATA of
+        // "well-known" types, where "well-known" means defined in RFC
+        // 1035. The CH A record format is only mentioned in RFC 1034,
+        // but since that's still part of the original DNS
+        // specification, we'll play it safe and decompress here. After
+        // all, as of 2023, BIND will compress CH A records.
+        let buf = helpers::prepare_to_read_rdata(message, cursor, rdlength)?;
+        let (lan, lan_len) = Name::try_from_compressed(buf, cursor)?;
+        if buf.len() - cursor == lan_len + 2 {
+            let mut rdata = Vec::with_capacity(lan.wire_repr().len() + 2);
+            rdata.extend_from_slice(lan.wire_repr());
+            rdata.extend_from_slice(&buf[cursor + lan_len..]);
+            Ok(rdata.try_into().unwrap())
+        } else {
+            Err(ReadRdataError::Other)
+        }
+    }
+
+    /// Determines whether this [`Rdata`] is equal to another, assuming
+    /// that both are of type A in class CH. See [`Rdata::equals`] for
+    /// details.
+    pub fn equals_as_ch_a(&self, other: &Self) -> bool {
+        if self.len() != other.len() {
+            return false;
+        }
+        match helpers::test_n_name_fields(&self.octets, &other.octets, 1) {
+            Some(Some(len)) => {
+                if len + 2 == self.len() {
+                    self.octets[len..] == other.octets[len..]
+                } else {
+                    // The second (address) fields are not the right
+                    // length, so both RDATAs are invalid.
+                    self.octets == other.octets
+                }
+            }
+            Some(None) => false,
+            None => self.octets == other.octets,
+        }
+    }
+
+    /// Returns an iterator over this `Rdata`'s
+    /// [`Component`](super::Component)s, assuming that it is of type
+    /// A in class CH.
+    pub fn components_as_ch_a(&self) -> Components {
+        // Per RFC 3597 § 4, we MUST NOT compress names in the RDATA of
+        // class-specific types.
+        Components {
+            types: &[ComponentType::UncompressibleName],
+            rdata: self.octets(),
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////
 // RFC 1035 § 3.3.13 - SOA RDATA                                      //
 ////////////////////////////////////////////////////////////////////////
 

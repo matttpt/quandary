@@ -96,6 +96,7 @@ impl Rdata {
             | Type::MG
             | Type::MR
             | Type::PTR => helpers::names_equal(&self.octets, &other.octets),
+            Type::A if class == Class::CH => self.equals_as_ch_a(other),
             Type::SOA => self.equals_as_soa(other),
             Type::MINFO => self.equals_as_minfo(other),
             Type::MX => self.equals_as_mx(other),
@@ -118,6 +119,7 @@ impl Rdata {
             | Type::MR
             | Type::PTR => helpers::validate_name(&self.octets),
             Type::A if class == Class::IN => self.validate_as_in_a(),
+            Type::A if class == Class::CH => self.validate_as_ch_a(),
             Type::SOA => self.validate_as_soa(),
             // For NULL, there is nothing to do!
             Type::WKS if class == Class::IN => self.validate_as_in_wks(),
@@ -193,6 +195,7 @@ impl Rdata {
             | Type::MR
             | Type::PTR => with_decompression(helpers::read_name_rdata),
             Type::A if class == Class::IN => without_decompression(Self::validate_as_in_a),
+            Type::A if class == Class::CH => with_decompression(Self::read_ch_a),
             Type::SOA => with_decompression(Self::read_soa),
             // For NULL, there is no validation to do!
             Type::WKS if class == Class::IN => without_decompression(Self::validate_as_in_wks),
@@ -220,6 +223,7 @@ impl Rdata {
             | Type::MG
             | Type::MR
             | Type::PTR => Components::for_single_compressible_name(self.octets()),
+            Type::A if class == Class::CH => self.components_as_ch_a(),
             Type::SOA => self.components_as_soa(),
             Type::MINFO => self.components_as_minfo(),
             Type::MX => self.components_as_mx(),
@@ -508,10 +512,10 @@ mod tests {
         // type-specific Rdata::read_* functions, the check occurs at
         // the beginning of those functions; for other RR types, it
         // occurs in Rdata::read itself. We test every possible RR type
-        // in class IN to ensure correct behavior. (NOTE: if support for
-        // any class-specific types outside class IN is added, then this
-        // test should be updated to test those class/type combinations
-        // as well.)
+        // in class IN, plus the class-specific RR types that we support
+        // outside class IN, to ensure correct behavior. (NOTE: whenever
+        // support for a new class-specific type outside IN is added,
+        // this test should be updated.)
         let too_short = [0; 4];
         for i in 0..=u16::MAX {
             assert!(matches!(
@@ -519,5 +523,9 @@ mod tests {
                 Err(ReadRdataError::UnexpectedEom),
             ));
         }
+        assert!(matches!(
+            Rdata::read(Class::CH, Type::A, &too_short, 2, 4),
+            Err(ReadRdataError::UnexpectedEom),
+        ));
     }
 }
