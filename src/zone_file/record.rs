@@ -233,6 +233,7 @@ impl<S: Read> Parser<S> {
             | Type::MR
             | Type::PTR => self.parse_name_rdata(),
             Type::A if class == Class::IN => self.parse_in_a_rdata(),
+            Type::A if class == Class::CH => self.parse_ch_a_rdata(),
             Type::SOA => self.parse_soa_rdata(),
             Type::WKS if class == Class::IN => self.parse_in_wks_rdata(),
             Type::HINFO => self.parse_hinfo_rdata(),
@@ -287,6 +288,37 @@ impl<S: Read> Parser<S> {
             self.reader.expect_eol()?;
             Ok(Rdata::new_in_a(ipv4))
         }
+    }
+
+    /// Parses RDATA for Chaosnet A records.
+    fn parse_ch_a_rdata(&mut self) -> Result<Box<Rdata>> {
+        if self.check_backslash_hash(ErrorKind::ExpectedNameOrBh)? {
+            self.parse_unknown_rdata_with_validation(Rdata::validate_as_ch_a)
+        } else {
+            let lan = self.parse_name()?;
+            self.reader
+                .skip_to_next_field(ErrorKind::ExpectedChaosnetAddr)?;
+            let address = self.parse_chaosnet_address()?;
+            self.reader.expect_eol()?;
+            Ok(Rdata::new_ch_a(&lan, address))
+        }
+    }
+
+    /// Parses a 16-bit Chaosnet address, expressed in octal.
+    fn parse_chaosnet_address(&mut self) -> Result<u16> {
+        let mut address: u16 = 0;
+        let start_position = self.reader.position();
+        while let Some(octet) = self.reader.read_field_octet()? {
+            if matches!(octet, b'0'..=b'7') {
+                address = address
+                    .checked_mul(8)
+                    .ok_or_else(|| Error::new(start_position, ErrorKind::InvalidChaosnetAddr))?;
+                address += (octet - b'0') as u16;
+            } else {
+                return Err(Error::new(start_position, ErrorKind::InvalidChaosnetAddr));
+            }
+        }
+        Ok(address)
     }
 
     /// Parses RDATA for SOA records.

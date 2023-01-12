@@ -135,6 +135,7 @@ pub enum ErrorKind {
     EscapeNeedsThreeDigits,
     EscapeValueOutOfRange,
     ExpectedBackslashHash,
+    ExpectedChaosnetAddr,
     ExpectedCharacterString,
     ExpectedCharacterStringOrBh,
     ExpectedClassOrType,
@@ -157,6 +158,7 @@ pub enum ErrorKind {
     FieldTooLong,
     IncludeNotSupported,
     IncludePathTooLong,
+    InvalidChaosnetAddr,
     InvalidClass(&'static str),
     InvalidHexDigit,
     InvalidInt(ParseIntError),
@@ -208,6 +210,7 @@ impl fmt::Display for ErrorKind {
                 f.write_str("invalid escape sequence: escaped octet value is out of range")
             }
             Self::ExpectedBackslashHash => f.write_str("expected \\#"),
+            Self::ExpectedChaosnetAddr => f.write_str("expected a Chaosnet address"),
             Self::ExpectedCharacterString => f.write_str("expected a <character-string>"),
             Self::ExpectedCharacterStringOrBh => {
                 f.write_str("expected a <character-string> or \\#")
@@ -234,6 +237,7 @@ impl fmt::Display for ErrorKind {
             Self::FieldTooLong => f.write_str("field is too long to parse"),
             Self::IncludeNotSupported => f.write_str("$INCLUDE is not supported"),
             Self::IncludePathTooLong => f.write_str("include path is too long"),
+            Self::InvalidChaosnetAddr => f.write_str("invalid Chaosnet address"),
             Self::InvalidClass(class_err) => class_err.fmt(f),
             Self::InvalidHexDigit => f.write_str("invalid hexadecimal digit"),
             Self::InvalidInt(ref int_err) => int_err.fmt(f),
