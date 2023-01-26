@@ -113,7 +113,7 @@ impl fmt::Display for Qtype {
 
 impl fmt::Debug for Qtype {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self)
+        write!(f, "{self}")
     }
 }
 
@@ -190,7 +190,7 @@ impl fmt::Display for Qclass {
 
 impl fmt::Debug for Qclass {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self)
+        write!(f, "{self}")
     }
 }
 

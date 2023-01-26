@@ -486,8 +486,8 @@ impl fmt::Display for Error {
         match *self {
             Self::HeaderTooShort => f.write_str("header too short"),
             Self::UnexpectedEomInField => f.write_str("unexpected end of message in field"),
-            Self::InvalidQname(err) => write!(f, "invalid QNAME: {}", err),
-            Self::InvalidOwner(err) => write!(f, "invalid owner: {}", err),
+            Self::InvalidQname(err) => write!(f, "invalid QNAME: {err}"),
+            Self::InvalidOwner(err) => write!(f, "invalid owner: {err}"),
             Self::InvalidRdata(err) => err.fmt(f),
         }
     }

@@ -120,7 +120,7 @@ impl FromStr for Type {
 
 impl fmt::Debug for Type {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self)
+        write!(f, "{self}")
     }
 }
 
@@ -147,7 +147,7 @@ impl fmt::Display for Type {
             Self::SRV => f.write_str("SRV"),
             Self::OPT => f.write_str("OPT"),
             Self::TSIG => f.write_str("TSIG"),
-            Self(value) => write!(f, "TYPE{}", value), // RFC 3597 § 5
+            Self(value) => write!(f, "TYPE{value}"), // RFC 3597 § 5
         }
     }
 }

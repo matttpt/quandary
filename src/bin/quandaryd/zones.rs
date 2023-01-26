@@ -102,7 +102,7 @@ fn load_impl(zones: Vec<ZoneConfig>, loaded: Option<&Catalog>) -> Catalog {
                 for (i, cause) in e.chain().enumerate() {
                     write!(message, "\n[{}] {}", i + 1, cause).unwrap();
                 }
-                error!("{}", message);
+                error!("{message}");
                 catalog.insert(make_error_catalog_entry(zone_config, loaded_zone));
                 zones_failed += 1;
             }
@@ -113,7 +113,7 @@ fn load_impl(zones: Vec<ZoneConfig>, loaded: Option<&Catalog>) -> Catalog {
         if zones_failed == 1 {
             error!("1 zone failed to load.");
         } else {
-            error!("{} zones failed to load.", zones_failed);
+            error!("{zones_failed} zones failed to load.");
         }
     }
 
@@ -275,7 +275,7 @@ fn validate_zone(zone: &HashMapTreeZone) -> Result<()> {
         } else {
             message.push_str("\nAll items above must be fixed before the zone can be loaded.");
         }
-        error!("{}", message);
+        error!("{message}");
         Err(anyhow!("zone validation failed (see above)"))
     } else if log_enabled!(Warn) {
         write!(
@@ -285,7 +285,7 @@ fn validate_zone(zone: &HashMapTreeZone) -> Result<()> {
             zone.class(),
         )
         .unwrap();
-        warn!("{}", message);
+        warn!("{message}");
         Ok(())
     } else {
         Ok(())

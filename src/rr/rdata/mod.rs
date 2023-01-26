@@ -320,7 +320,7 @@ impl fmt::Display for Rdata {
 
 impl fmt::Debug for Rdata {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "\"{}\"", self)
+        write!(f, "\"{self}\"")
     }
 }
 
@@ -464,7 +464,7 @@ pub enum ReadRdataError {
 impl fmt::Display for ReadRdataError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Self::InvalidName(err) => write!(f, "invalid embedded domain name: {}", err),
+            Self::InvalidName(err) => write!(f, "invalid embedded domain name: {err}"),
             Self::UnexpectedEom => f.write_str("unexpected end of message in RDATA"),
             Self::Other => f.write_str("invalid RDATA"),
         }

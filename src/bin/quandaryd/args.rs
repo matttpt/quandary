@@ -90,7 +90,7 @@ impl FromStr for ZoneDescription {
             return Ok(Self {
                 name: name
                     .parse()
-                    .map_err(|e| anyhow!("invalid zone name: {}", e))?,
+                    .map_err(|e| anyhow!("invalid zone name: {e}"))?,
                 path: PathBuf::from(path),
             });
         }
@@ -114,9 +114,9 @@ impl FromStr for ZoneDescription {
         {
             if let Some(zone_name_without_trailing_dot) = path.file_stem().and_then(OsStr::to_str) {
                 Ok(Self {
-                    name: format!("{}.", zone_name_without_trailing_dot)
+                    name: format!("{zone_name_without_trailing_dot}.")
                         .parse()
-                        .map_err(|e| anyhow!("invalid zone name: {}", e))?,
+                        .map_err(|e| anyhow!("invalid zone name: {e}"))?,
                     path: path.to_owned(),
                 })
             } else {

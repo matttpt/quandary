@@ -73,7 +73,7 @@ impl fmt::Display for Opcode {
             Self::NOTIFY => f.write_str("NOTIFY"),
             Self::UPDATE => f.write_str("UPDATE"),
             Self::DSO => f.write_str("DSO"),
-            Self(value) => write!(f, "unassigned opcode {}", value),
+            Self(value) => write!(f, "unassigned opcode {value}"),
         }
     }
 }

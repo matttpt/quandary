@@ -49,7 +49,7 @@ pub fn run(args: RunArgs) {
             write!(message, "\n[{}] {}", i + 1, cause).unwrap();
         }
         message.push_str("\nExiting with failure.");
-        error!("{}", message);
+        error!("{message}");
         process::exit(1);
     }
     info!("Exiting with success.");
@@ -167,7 +167,7 @@ fn try_running(run_args: RunArgs) -> Result<()> {
                     SIGTERM => "SIGTERM",
                     _ => unreachable!(),
                 };
-                info!("Received {}; shutting down.", name);
+                info!("Received {name}; shutting down.");
                 break;
             }
             SIGHUP => {
@@ -179,7 +179,7 @@ fn try_running(run_args: RunArgs) -> Result<()> {
                         for (i, cause) in e.chain().enumerate() {
                             write!(message, "\n[{}] {}", i + 1, cause).unwrap();
                         }
-                        error!("{}", message);
+                        error!("{message}");
                     }
                 };
             }

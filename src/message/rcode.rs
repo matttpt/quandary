@@ -106,7 +106,7 @@ impl fmt::Display for Rcode {
             Self::NOTAUTH => f.write_str("NOTAUTH"),
             Self::NOTZONE => f.write_str("NOTZONE"),
             Self::DSOTYPENI => f.write_str("DSOTYPENI"),
-            Self(value) => write!(f, "unassigned RCODE {}", value),
+            Self(value) => write!(f, "unassigned RCODE {value}"),
         }
     }
 }
@@ -197,7 +197,7 @@ impl fmt::Display for ExtendedRcode {
                 Self::BADALG => f.write_str("BADALG"),
                 Self::BADTRUNC => f.write_str("BADTRUNC"),
                 Self::BADCOOKIE => f.write_str("BADCOOKIE"),
-                Self(value) => write!(f, "unassigned extended RCODE {}", value),
+                Self(value) => write!(f, "unassigned extended RCODE {value}"),
             }
         }
     }

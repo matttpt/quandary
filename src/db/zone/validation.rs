@@ -107,32 +107,26 @@ impl fmt::Display for ValidationIssue<'_> {
                 f.write_str("the zone has too many SOA records (precisely one is needed)")
             }
             Self::MissingApexNs => f.write_str("the zone is missing an NS record"),
-            Self::MissingNsAddress(ref nsdname) => write!(
-                f,
-                "the in-zone nameserver {} is missing an address",
-                nsdname
-            ),
-            Self::MissingMxAddress(ref name) => write!(
-                f,
-                "the in-zone mail exchanger {} is missing an address",
-                name
-            ),
+            Self::MissingNsAddress(ref nsdname) => {
+                write!(f, "the in-zone nameserver {nsdname} is missing an address")
+            }
+            Self::MissingMxAddress(ref name) => {
+                write!(f, "the in-zone mail exchanger {name} is missing an address")
+            }
             Self::MissingGlue(ref nsdname) => {
-                write!(f, "a glue record for {} is needed", nsdname)
+                write!(f, "a glue record for {nsdname} is needed")
             }
             Self::DuplicateCname(name) => {
-                write!(f, "the name {} has duplicate CNAME records", name)
+                write!(f, "the name {name} has duplicate CNAME records")
             }
             Self::OtherRecordsAtCname(name) => write!(
                 f,
-                "the name {}, which has a CNAME record, cannot have other records",
-                name
+                "the name {name}, which has a CNAME record, cannot have other records",
             ),
             Self::NsAtWildcard(name) => write!(
                 f,
-                "the wildcard domain name {} owns an NS RRset; \
+                "the wildcard domain name {name} owns an NS RRset; \
                  this is discouraged and its semantics are undefined",
-                name
             ),
         }
     }

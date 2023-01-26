@@ -177,7 +177,7 @@ fn log_config_summary(config: &Config) {
     summarize_zones(&config.zones, &mut message);
     message.write_str("\nTSIG keys:    ").unwrap();
     summarize_keys(&config.tsig_keys, &mut message);
-    debug!("{}", message);
+    debug!("{message}");
 }
 
 /// Summarizes only the zones and TSIG keys in the log, if the debug log
@@ -188,7 +188,7 @@ fn log_zone_and_key_summary(config: &Config) {
         summarize_zones(&config.zones, &mut message);
         message.push_str("\nTSIG keys: ");
         summarize_keys(&config.tsig_keys, &mut message);
-        debug!("{}", message);
+        debug!("message");
     }
 }
 

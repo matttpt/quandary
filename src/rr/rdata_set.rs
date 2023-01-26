@@ -64,7 +64,7 @@ impl fmt::Debug for RdataSet {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut list = f.debug_list();
         for rdata in self.iter() {
-            list.entry(&format_args!("{:?}", rdata));
+            list.entry(&format_args!("{rdata:?}"));
         }
         list.finish()
     }

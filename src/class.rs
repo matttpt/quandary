@@ -93,7 +93,7 @@ impl fmt::Display for Class {
             Self::IN => write!(f, "IN"),
             Self::CH => write!(f, "CH"),
             Self::HS => write!(f, "HS"),
-            Self(value) => write!(f, "CLASS{}", value), // RFC 3597 § 5
+            Self(value) => write!(f, "CLASS{value}"), // RFC 3597 § 5
         }
     }
 }

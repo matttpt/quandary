@@ -446,7 +446,7 @@ impl fmt::Display for Name {
             let mut labels = self.labels();
             labels.next().unwrap().fmt(f)?;
             for label in labels {
-                write!(f, ".{}", label)?;
+                write!(f, ".{label}")?;
             }
             Ok(())
         }
@@ -455,7 +455,7 @@ impl fmt::Display for Name {
 
 impl fmt::Debug for Name {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "\"{}\"", self)
+        write!(f, "\"{self}\"")
     }
 }
 

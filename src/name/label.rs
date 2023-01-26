@@ -188,7 +188,7 @@ impl fmt::Display for Label {
 
 impl fmt::Debug for Label {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "\"{}\"", self)
+        write!(f, "\"{self}\"")
     }
 }
 

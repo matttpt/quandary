@@ -194,7 +194,7 @@ impl Drop for OneshotHandle {
 
         if thread::panicking() {
             let thread_name = current_thread.name().unwrap_or("anonymous");
-            error!("One-shot thread {} panicked", thread_name);
+            error!("One-shot thread {thread_name} panicked");
         }
 
         let mut records = self.group.records.lock().unwrap();
@@ -267,13 +267,13 @@ where
         }
 
         if thread::panicking() {
-            error!("Respawnable thread {} panicked", thread_name);
+            error!("Respawnable thread {thread_name} panicked");
         }
 
         let mut records = self.group.records.lock().unwrap();
         if !records.shutting_down {
             if !thread::panicking() {
-                error!("Respawnable thread {} exited prematurely", thread_name);
+                error!("Respawnable thread {thread_name} exited prematurely");
             }
 
             let since_last_start = Instant::now().duration_since(self.last_start);
@@ -314,7 +314,7 @@ where
                     self.task.clone(),
                 );
                 if let Err(e) = result {
-                    error!("Respawn of thread {} failed: {}", thread_name, e);
+                    error!("Respawn of thread {thread_name} failed: {e}");
                 }
             }
         }
@@ -516,7 +516,7 @@ fn start_pool_workers(
 ) -> io::Result<()> {
     for i in 0..permanent_workers {
         let pool = pool.clone();
-        let name = format!("{} worker {}", base_name, i);
+        let name = format!("{base_name} worker {i}");
         let task = move || pool_worker_loop(pool.clone(), None);
         start_respawnable(group.clone(), group_records, Some(name), Arc::new(task))?;
     }

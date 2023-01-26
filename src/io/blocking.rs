@@ -428,6 +428,6 @@ fn log_io_errors<T>(result: io::Result<T>) {
     if let Err(e) = result {
         let current_thread = thread::current();
         let thread_name = current_thread.name().unwrap_or("anonymous thread");
-        error!("I/O error in thread {}: {}", thread_name, e);
+        error!("I/O error in thread {thread_name}: {e}");
     }
 }
