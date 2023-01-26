@@ -382,8 +382,9 @@ impl Rrl {
                 entry.count = entry
                     .count
                     .saturating_sub(rate * since_last_refill.as_secs() as u32);
-                entry.last_refill =
-                    now - Duration::from_nanos(since_last_refill.subsec_nanos() as u64);
+                entry.last_refill = now
+                    .checked_sub(Duration::from_nanos(since_last_refill.subsec_nanos() as u64))
+                    .expect("Instant cannot represent computed last refill time; this is a bug");
             }
 
             if entry.count >= limit {
