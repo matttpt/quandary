@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
+use base64::prelude::{Engine as _, BASE64_STANDARD};
 use log::Level::Debug;
 use log::{debug, log_enabled};
 use paste::paste;
@@ -565,7 +566,8 @@ where
     D: de::Deserializer<'de>,
 {
     let raw = <&str>::deserialize(deserializer)?;
-    base64::decode(raw)
+    BASE64_STANDARD
+        .decode(raw)
         .map(Vec::into_boxed_slice)
         .map_err(|_| de::Error::custom("invalid base-64 encoding"))
 }
