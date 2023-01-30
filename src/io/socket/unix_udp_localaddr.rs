@@ -78,61 +78,9 @@ impl UdpSocketApi for UdpSocket {
     const SUPPORTS_LOCAL_ADDRESS_SELECTION: bool = true;
 
     fn bind(addr: SocketAddr) -> io::Result<Self> {
-        // Create the socket.
-        let family = if addr.is_ipv6() {
-            AddressFamily::Inet6
-        } else {
-            AddressFamily::Inet
-        };
-        let fd = socket(
-            family,
-            SockType::Datagram,
-            SockFlag::SOCK_CLOEXEC,
-            SockProtocol::Udp,
-        )?;
-
-        // For sockets bound to any local address, set the appropriate
-        // socket option so that we receive the destination address used
-        // to reach us when we call recvmsg.
-        if addr.ip().is_unspecified() {
-            let set_recv_dest_addr_sockopt_result = if addr.is_ipv6() {
-                setsockopt(fd, sockopt::Ipv6RecvPacketInfo, &true)
-            } else {
-                cfg_if! {
-                    if #[cfg(any(target_os = "linux", target_os = "netbsd"))] {
-                        setsockopt(fd, sockopt::Ipv4PacketInfo, &true)
-                    } else if #[cfg(target_os = "freebsd")] {
-                        setsockopt(fd, sockopt::Ipv4RecvDstAddr, &true)
-                    }
-                }
-            };
-            if let Err(e) = set_recv_dest_addr_sockopt_result {
-                let _ = close(fd);
-                return Err(e.into());
-            }
-        }
-
-        // Bind the socket.
-        let sock_addr = SockaddrStorage::from(addr);
-        if let Err(e) = bind(fd, &sock_addr) {
-            let _ = close(fd);
-            return Err(e.into());
-        }
-
-        // Allocate space for the control message buffer that we will
-        // use when receiving.
-        let cmsg_buf = if addr.ip().is_unspecified() {
-            make_cmsg_buf(addr.is_ipv6())
-        } else {
-            // We won't use it, so we don't actually allocate anything.
-            Vec::new()
-        };
-
+        let (data, cmsg_buf) = bind_impl(addr)?;
         Ok(Self {
-            data: Arc::new(UdpSocketSharedData {
-                fd,
-                bind_addr: addr.ip(),
-            }),
+            data: Arc::new(data),
             cmsg_buf,
         })
     }
@@ -156,74 +104,142 @@ impl UdpSocketApi for UdpSocket {
     }
 
     fn recv(&mut self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, IpAddr)> {
-        let mut iov = [IoSliceMut::new(buf)];
-        let (msg, dest_addr) = if self.data.bind_addr.is_unspecified() {
-            let msg: RecvMsg<SockaddrStorage> = recvmsg(
-                self.data.fd,
-                &mut iov,
-                Some(&mut self.cmsg_buf),
-                MsgFlags::empty(),
-            )?;
-            let dest_addr = extract_dest_addr(self.data.bind_addr.is_ipv6(), msg.cmsgs())?;
-            (msg, dest_addr)
-        } else {
-            let msg: RecvMsg<SockaddrStorage> =
-                recvmsg(self.data.fd, &mut iov, None, MsgFlags::empty())?;
-            (msg, self.data.bind_addr)
-        };
-        let src_addr = extract_src_addr(self.data.bind_addr.is_ipv6(), msg.address.as_ref())?;
-        Ok((msg.bytes, src_addr, dest_addr))
+        recv_impl(&self.data, &mut self.cmsg_buf, buf)
     }
 
     fn send(&mut self, buf: &[u8], dest: SocketAddr, src: IpAddr) -> io::Result<usize> {
-        let iov = [IoSlice::new(buf)];
-        let dest_sockaddr = SockaddrStorage::from(dest);
-        if self.data.bind_addr.is_unspecified() {
-            if self.data.bind_addr.is_ipv6() {
-                let info = make_in6_pktinfo(src)?;
-                let cmsgs = [ControlMessage::Ipv6PacketInfo(&info)];
-                sendmsg(
-                    self.data.fd,
-                    &iov,
-                    &cmsgs,
-                    MsgFlags::empty(),
-                    Some(&dest_sockaddr),
-                )
-                .map_err(Into::into)
-            } else {
-                cfg_if! {
-                    if #[cfg(any(target_os = "linux", target_os = "netbsd"))] {
-                        let info = make_in_pktinfo(src)?;
-                        let cmsgs = [ControlMessage::Ipv4PacketInfo(&info)];
-                    } else if #[cfg(target_os = "freebsd")] {
-                        let src_in_addr = make_in_addr(src)?;
-                        let cmsgs = [ControlMessage::Ipv4SendSrcAddr(&src_in_addr)];
-                    }
+        send_impl(&self.data, buf, dest, src)
+    }
+}
+
+/// The underlying implementation of [`UdpSocket::bind`].
+fn bind_impl(addr: SocketAddr) -> io::Result<(UdpSocketSharedData, Vec<u8>)> {
+    // Create the socket.
+    let family = if addr.is_ipv6() {
+        AddressFamily::Inet6
+    } else {
+        AddressFamily::Inet
+    };
+    let fd = socket(
+        family,
+        SockType::Datagram,
+        SockFlag::SOCK_CLOEXEC,
+        SockProtocol::Udp,
+    )?;
+
+    // For sockets bound to any local address, set the appropriate
+    // socket option so that we receive the destination address used
+    // to reach us when we call recvmsg.
+    if addr.ip().is_unspecified() {
+        let set_recv_dest_addr_sockopt_result = if addr.is_ipv6() {
+            setsockopt(fd, sockopt::Ipv6RecvPacketInfo, &true)
+        } else {
+            cfg_if! {
+                if #[cfg(any(target_os = "linux", target_os = "netbsd"))] {
+                    setsockopt(fd, sockopt::Ipv4PacketInfo, &true)
+                } else if #[cfg(target_os = "freebsd")] {
+                    setsockopt(fd, sockopt::Ipv4RecvDstAddr, &true)
                 }
-                sendmsg(
-                    self.data.fd,
-                    &iov,
-                    &cmsgs,
-                    MsgFlags::empty(),
-                    Some(&dest_sockaddr),
-                )
-                .map_err(Into::into)
             }
-        } else if src == self.data.bind_addr {
+        };
+        if let Err(e) = set_recv_dest_addr_sockopt_result {
+            let _ = close(fd);
+            return Err(e.into());
+        }
+    }
+
+    // Bind the socket.
+    let sock_addr = SockaddrStorage::from(addr);
+    if let Err(e) = bind(fd, &sock_addr) {
+        let _ = close(fd);
+        return Err(e.into());
+    }
+
+    // Allocate space for the control message buffer that we will
+    // use when receiving.
+    let cmsg_buf = if addr.ip().is_unspecified() {
+        make_cmsg_buf(addr.is_ipv6())
+    } else {
+        // We won't use it, so we don't actually allocate anything.
+        Vec::new()
+    };
+
+    Ok((
+        UdpSocketSharedData {
+            fd,
+            bind_addr: addr.ip(),
+        },
+        cmsg_buf,
+    ))
+}
+
+/// The underlying implementation of [`UdpSocket::recv`].
+fn recv_impl(
+    data: &UdpSocketSharedData,
+    cmsg_buf: &mut Vec<u8>,
+    buf: &mut [u8],
+) -> io::Result<(usize, SocketAddr, IpAddr)> {
+    let mut iov = [IoSliceMut::new(buf)];
+    let (msg, dest_addr) = if data.bind_addr.is_unspecified() {
+        let msg: RecvMsg<SockaddrStorage> =
+            recvmsg(data.fd, &mut iov, Some(cmsg_buf), MsgFlags::empty())?;
+        let dest_addr = extract_dest_addr(data.bind_addr.is_ipv6(), msg.cmsgs())?;
+        (msg, dest_addr)
+    } else {
+        let msg: RecvMsg<SockaddrStorage> = recvmsg(data.fd, &mut iov, None, MsgFlags::empty())?;
+        (msg, data.bind_addr)
+    };
+    let src_addr = extract_src_addr(data.bind_addr.is_ipv6(), msg.address.as_ref())?;
+    Ok((msg.bytes, src_addr, dest_addr))
+}
+
+/// The underlying implementation of [`UdpSocket::send`].
+fn send_impl(
+    data: &UdpSocketSharedData,
+    buf: &[u8],
+    dest: SocketAddr,
+    src: IpAddr,
+) -> io::Result<usize> {
+    let iov = [IoSlice::new(buf)];
+    let dest_sockaddr = SockaddrStorage::from(dest);
+    if data.bind_addr.is_unspecified() {
+        if data.bind_addr.is_ipv6() {
+            let info = make_in6_pktinfo(src)?;
+            let cmsgs = [ControlMessage::Ipv6PacketInfo(&info)];
             sendmsg(
-                self.data.fd,
+                data.fd,
                 &iov,
-                &[],
+                &cmsgs,
                 MsgFlags::empty(),
                 Some(&dest_sockaddr),
             )
             .map_err(Into::into)
         } else {
-            Err(Error::new(
-                ErrorKind::InvalidInput,
-                "passed the wrong source address",
-            ))
+            cfg_if! {
+                if #[cfg(any(target_os = "linux", target_os = "netbsd"))] {
+                    let info = make_in_pktinfo(src)?;
+                    let cmsgs = [ControlMessage::Ipv4PacketInfo(&info)];
+                } else if #[cfg(target_os = "freebsd")] {
+                    let src_in_addr = make_in_addr(src)?;
+                    let cmsgs = [ControlMessage::Ipv4SendSrcAddr(&src_in_addr)];
+                }
+            }
+            sendmsg(
+                data.fd,
+                &iov,
+                &cmsgs,
+                MsgFlags::empty(),
+                Some(&dest_sockaddr),
+            )
+            .map_err(Into::into)
         }
+    } else if src == data.bind_addr {
+        sendmsg(data.fd, &iov, &[], MsgFlags::empty(), Some(&dest_sockaddr)).map_err(Into::into)
+    } else {
+        Err(Error::new(
+            ErrorKind::InvalidInput,
+            "passed the wrong source address",
+        ))
     }
 }
 
