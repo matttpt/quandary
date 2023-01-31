@@ -27,7 +27,15 @@
 //! and I/O APIs used and their concurrency strategies (based on what is
 //! appropriate for those APIs).
 
+use std::time::Duration;
+
 mod blocking;
 pub mod socket;
 
 pub use blocking::{BlockingIoConfig, BlockingIoProvider};
+
+/// This defines the maximum amount of time a client is allowed to take
+/// to send us a full DNS message. If it takes longer, we close the
+/// connection to defend against Slowloris-style denial-of-service
+/// attacks. This also helps limit how long graceful shutdowns may take.
+const READ_MESSAGE_TIMEOUT: Duration = Duration::from_secs(5);

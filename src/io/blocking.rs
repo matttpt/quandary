@@ -178,15 +178,6 @@ impl BlockingIoProvider {
 /// [`BlockingIoProvider::SUPPORTS_GRACEFUL_SHUTDOWN`].
 const CHECK_FOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// This defines the maximum amount of time a client is allowed to take
-/// to send us a full DNS message. If it it takes longer, we close the
-/// connection to defend against Slowloris-style denial-of-service
-/// attacks. Since TCP workers check for shutdown after handling a
-/// message, this (plus message processing time) is the maximum amount
-/// of time the shutdown procedure will have to wait for these threads
-/// to finish up.
-const READ_MESSAGE_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// The TCP listener/accept loop.
 fn run_tcp_listener<C>(
     pool: &Arc<ThreadPool>,
@@ -263,8 +254,8 @@ where
         // We give the client READ_MESSAGE_TIMEOUT to send a complete
         // DNS message. This counters Slowloris-style denial-of-service
         // attacks.
-        let deadline = Instant::now() + READ_MESSAGE_TIMEOUT;
-        let mut timeout = READ_MESSAGE_TIMEOUT;
+        let deadline = Instant::now() + super::READ_MESSAGE_TIMEOUT;
+        let mut timeout = super::READ_MESSAGE_TIMEOUT;
 
         // Read a DNS message.
         let mut received_len_opt = None;
