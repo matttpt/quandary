@@ -62,7 +62,7 @@ impl Clone for UdpSocket {
         // make_cmsg_buf again.
         Self {
             data: self.data.clone(),
-            cmsg_buf: make_cmsg_buf(self.data.bind_addr.is_ipv6()),
+            cmsg_buf: make_cmsg_buf(self.data.bind_addr),
         }
     }
 }
@@ -155,21 +155,12 @@ fn bind_impl(addr: SocketAddr) -> io::Result<(UdpSocketSharedData, Vec<u8>)> {
         return Err(e.into());
     }
 
-    // Allocate space for the control message buffer that we will
-    // use when receiving.
-    let cmsg_buf = if addr.ip().is_unspecified() {
-        make_cmsg_buf(addr.is_ipv6())
-    } else {
-        // We won't use it, so we don't actually allocate anything.
-        Vec::new()
-    };
-
     Ok((
         UdpSocketSharedData {
             fd,
             bind_addr: addr.ip(),
         },
-        cmsg_buf,
+        make_cmsg_buf(addr.ip()),
     ))
 }
 
@@ -243,9 +234,14 @@ fn send_impl(
     }
 }
 
-/// Allocates the control message buffer for a UDP socket.
-fn make_cmsg_buf(ipv6: bool) -> Vec<u8> {
-    if ipv6 {
+/// Makes the control message buffer for a UDP socket. This
+/// pre-allocates a buffer using [`cmsg_space`] when the address is
+/// unspecified. For other addresses, the buffer will not be used, so an
+/// empty [`Vec`] is returned.
+fn make_cmsg_buf(addr: IpAddr) -> Vec<u8> {
+    if !addr.is_unspecified() {
+        Vec::new()
+    } else if addr.is_ipv6() {
         cmsg_space!(in6_pktinfo)
     } else {
         cfg_if! {
