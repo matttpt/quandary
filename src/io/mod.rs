@@ -34,6 +34,12 @@ pub mod socket;
 
 pub use blocking::{BlockingIoConfig, BlockingIoProvider};
 
+#[cfg(feature = "tokio")]
+mod tokio;
+
+#[cfg(feature = "tokio")]
+pub use self::tokio::{TokioIoProvider, TokioShutdownController};
+
 /// This defines the maximum amount of time a client is allowed to take
 /// to send us a full DNS message. If it takes longer, we close the
 /// connection to defend against Slowloris-style denial-of-service

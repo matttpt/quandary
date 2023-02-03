@@ -43,3 +43,53 @@ impl UdpSocketApi for UdpSocket {
         self.0.send_to(buf, dest)
     }
 }
+
+#[cfg(feature = "tokio")]
+mod tokio {
+    use std::io;
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use std::task::{ready, Context, Poll};
+
+    use tokio::io::ReadBuf;
+
+    use super::super::AsyncUdpSocketApi;
+
+    /// An asynchronous UDP socket implementation using Tokio and the
+    /// Rust standard library.
+    #[derive(Clone)]
+    pub struct AsyncUdpSocket(Arc<tokio::net::UdpSocket>);
+
+    impl AsyncUdpSocketApi for AsyncUdpSocket {
+        fn bind(addr: SocketAddr) -> io::Result<Self> {
+            let socket = std::net::UdpSocket::bind(addr)?;
+            socket.set_nonblocking(true)?;
+            tokio::net::UdpSocket::from_std(socket)
+                .map(Arc::new)
+                .map(Self)
+        }
+
+        fn poll_recv(
+            &mut self,
+            cx: &mut Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<io::Result<(usize, SocketAddr, ())>> {
+            let mut read_buf = ReadBuf::new(buf);
+            let res = ready!(self.0.poll_recv_from(cx, &mut read_buf));
+            Poll::Ready(res.map(|socket_addr| (read_buf.filled().len(), socket_addr, ())))
+        }
+
+        fn poll_send(
+            &mut self,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+            dest: SocketAddr,
+            _src: (),
+        ) -> Poll<io::Result<usize>> {
+            self.0.poll_send_to(cx, buf, dest)
+        }
+    }
+}
+
+#[cfg(feature = "tokio")]
+pub use self::tokio::AsyncUdpSocket;

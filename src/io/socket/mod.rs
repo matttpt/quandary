@@ -140,3 +140,105 @@ pub(crate) use udp_impl::UdpSocket;
 /// Whether local address selection is supported for UDP sockets on this
 /// target.
 pub const SUPPORTS_LOCAL_ADDRESS_SELECTION: bool = UdpSocket::SUPPORTS_LOCAL_ADDRESS_SELECTION;
+
+#[cfg(feature = "tokio")]
+mod tokio {
+    use std::future::Future;
+    use std::io;
+    use std::net::SocketAddr;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use super::{UdpSocket, UdpSocketApi};
+
+    type LocalAddr = <UdpSocket as UdpSocketApi>::LocalAddr;
+
+    /// The API that the concrete, target-specific
+    /// [`AsyncUdpSocket`](super::AsyncUdpSocket) must implement.
+    pub(crate) trait AsyncUdpSocketApi: Clone + Sized {
+        /// Creates a new UDP socket bound to the provided address.
+        fn bind(addr: SocketAddr) -> io::Result<Self>;
+
+        /// Attempts to receive a datagram. This is a low-level
+        /// method to be provided by implementors; users should call
+        /// [`AsyncUdpSocketApi::recv`] to get a [`Future`] instead.
+        fn poll_recv(
+            &mut self,
+            cx: &mut Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<io::Result<(usize, SocketAddr, LocalAddr)>>;
+
+        /// Attempts to send a datagram. This is a low-level
+        /// method to be provided by implementors; users should call
+        /// [`AsyncUdpSocketApi::send`] to get a [`Future`] instead.
+        fn poll_send(
+            &mut self,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+            dest: SocketAddr,
+            src: LocalAddr,
+        ) -> Poll<io::Result<usize>>;
+
+        /// Receives a datagram.
+        fn recv<'a>(&'a mut self, buf: &'a mut [u8]) -> RecvFut<'a, Self> {
+            RecvFut { socket: self, buf }
+        }
+
+        /// Sends a datagram.
+        fn send<'a>(
+            &'a mut self,
+            buf: &'a [u8],
+            dest: SocketAddr,
+            src: LocalAddr,
+        ) -> SendFut<'a, Self> {
+            SendFut {
+                socket: self,
+                buf,
+                dest,
+                src,
+            }
+        }
+    }
+
+    /// The [`Future`] returned by [`AsyncUdpSocketApi::recv`].
+    pub(crate) struct RecvFut<'a, S> {
+        socket: &'a mut S,
+        buf: &'a mut [u8],
+    }
+
+    impl<'a, S> Future for RecvFut<'a, S>
+    where
+        S: AsyncUdpSocketApi,
+    {
+        type Output = io::Result<(usize, SocketAddr, LocalAddr)>;
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let this = self.get_mut();
+            this.socket.poll_recv(cx, this.buf)
+        }
+    }
+
+    /// The [`Future`] returned by [`AsyncUdpSocketApi::send`].
+    pub(crate) struct SendFut<'a, S> {
+        socket: &'a mut S,
+        buf: &'a [u8],
+        dest: SocketAddr,
+        src: LocalAddr,
+    }
+
+    impl<'a, S> Future for SendFut<'a, S>
+    where
+        S: AsyncUdpSocketApi,
+    {
+        type Output = io::Result<usize>;
+
+        #[allow(clippy::unit_arg)]
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let this = self.get_mut();
+            this.socket.poll_send(cx, this.buf, this.dest, this.src)
+        }
+    }
+}
+
+#[cfg(feature = "tokio")]
+pub(crate) use self::{tokio::AsyncUdpSocketApi, udp_impl::AsyncUdpSocket};

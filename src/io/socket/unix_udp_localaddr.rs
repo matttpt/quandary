@@ -14,6 +14,7 @@
 
 use std::io::{self, Error, ErrorKind, IoSlice, IoSliceMut};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::os::fd::AsRawFd;
 use std::os::unix::io::RawFd;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,14 +35,7 @@ use libc::in_pktinfo;
 
 use super::UdpSocketApi;
 
-/// A UDP socket implementation for Unix systems with local address
-/// selection support. This currently works on Linux and NetBSD.
-pub struct UdpSocket {
-    data: Arc<UdpSocketSharedData>,
-    cmsg_buf: Vec<u8>,
-}
-
-/// Each [`UdpSocket`] corresponding to a single file descriptor has its
+/// Each UDP socket corresponding to a single file descriptor has its
 /// own control-message buffer, but they all share a copy of this
 /// structure through an [`Arc`] smart pointer. This type's [`Drop`]
 /// implementation closes the socket file descriptor.
@@ -49,6 +43,29 @@ pub struct UdpSocket {
 struct UdpSocketSharedData {
     fd: RawFd,
     bind_addr: IpAddr,
+}
+
+impl Drop for UdpSocketSharedData {
+    fn drop(&mut self) {
+        let _ = close(self.fd);
+    }
+}
+
+impl AsRawFd for UdpSocketSharedData {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd
+    }
+}
+
+////////////////////////////////////////////////////////////////////////
+// SYNCHRONOUS UDP SOCKETS                                            //
+////////////////////////////////////////////////////////////////////////
+
+/// A UDP socket implementation, available on Linux, NetBSD, and FreeBSD
+/// systems, with local address selection support.
+pub struct UdpSocket {
+    data: Arc<UdpSocketSharedData>,
+    cmsg_buf: Vec<u8>,
 }
 
 impl Clone for UdpSocket {
@@ -64,12 +81,6 @@ impl Clone for UdpSocket {
             data: self.data.clone(),
             cmsg_buf: make_cmsg_buf(self.data.bind_addr),
         }
-    }
-}
-
-impl Drop for UdpSocketSharedData {
-    fn drop(&mut self) {
-        let _ = close(self.fd);
     }
 }
 
@@ -112,7 +123,95 @@ impl UdpSocketApi for UdpSocket {
     }
 }
 
-/// The underlying implementation of [`UdpSocket::bind`].
+////////////////////////////////////////////////////////////////////////
+// ASYNCHRONOUS UDP SOCKETS WITH TOKIO                                //
+////////////////////////////////////////////////////////////////////////
+
+#[cfg(feature = "tokio")]
+mod tokio {
+    use std::io;
+    use std::net::{IpAddr, SocketAddr};
+    use std::sync::Arc;
+    use std::task::{ready, Context, Poll};
+
+    use nix::fcntl::{fcntl, FcntlArg, OFlag};
+    use tokio::io::unix::AsyncFd;
+
+    use super::super::AsyncUdpSocketApi;
+    use super::UdpSocketSharedData;
+
+    /// A Tokio-based asynchronous UDP socket implementation, available
+    /// on Linux, NetBSD, and FreeBSD systems, with local address
+    /// selection support.
+    pub struct AsyncUdpSocket {
+        data: Arc<AsyncFd<UdpSocketSharedData>>,
+        cmsg_buf: Vec<u8>,
+    }
+
+    impl Clone for AsyncUdpSocket {
+        fn clone(&self) -> Self {
+            // See the note above in UdpSocket::clone; it also applies
+            // here.
+            Self {
+                data: self.data.clone(),
+                cmsg_buf: super::make_cmsg_buf(self.data.get_ref().bind_addr),
+            }
+        }
+    }
+
+    impl AsyncUdpSocketApi for AsyncUdpSocket {
+        fn bind(addr: SocketAddr) -> io::Result<Self> {
+            let (data, cmsg_buf) = super::bind_impl(addr)?;
+            fcntl(data.fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK))?;
+            Ok(Self {
+                data: Arc::new(AsyncFd::new(data)?),
+                cmsg_buf,
+            })
+        }
+
+        fn poll_recv(
+            &mut self,
+            cx: &mut Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<io::Result<(usize, SocketAddr, IpAddr)>> {
+            loop {
+                let mut guard = ready!(self.data.poll_read_ready(cx))?;
+                match guard.try_io(|async_fd| {
+                    super::recv_impl(async_fd.get_ref(), &mut self.cmsg_buf, buf)
+                }) {
+                    Ok(res) => return Poll::Ready(res),
+                    Err(_) => continue,
+                }
+            }
+        }
+
+        fn poll_send(
+            &mut self,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+            dest: SocketAddr,
+            src: IpAddr,
+        ) -> Poll<io::Result<usize>> {
+            loop {
+                let mut guard = ready!(self.data.poll_write_ready(cx))?;
+                match guard.try_io(|async_fd| super::send_impl(async_fd.get_ref(), buf, dest, src))
+                {
+                    Ok(res) => return Poll::Ready(res),
+                    Err(_) => continue,
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "tokio")]
+pub use self::tokio::AsyncUdpSocket;
+
+////////////////////////////////////////////////////////////////////////
+// COMMON IMPLEMENTATION                                              //
+////////////////////////////////////////////////////////////////////////
+
+/// The common implementation for binding a UDP socket.
 fn bind_impl(addr: SocketAddr) -> io::Result<(UdpSocketSharedData, Vec<u8>)> {
     // Create the socket.
     let family = if addr.is_ipv6() {
@@ -164,7 +263,7 @@ fn bind_impl(addr: SocketAddr) -> io::Result<(UdpSocketSharedData, Vec<u8>)> {
     ))
 }
 
-/// The underlying implementation of [`UdpSocket::recv`].
+/// The common implementation for receiving a UDP packet.
 fn recv_impl(
     data: &UdpSocketSharedData,
     cmsg_buf: &mut Vec<u8>,
@@ -184,7 +283,7 @@ fn recv_impl(
     Ok((msg.bytes, src_addr, dest_addr))
 }
 
-/// The underlying implementation of [`UdpSocket::send`].
+/// The common implementation for sending a UDP packet.
 fn send_impl(
     data: &UdpSocketSharedData,
     buf: &[u8],
