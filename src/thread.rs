@@ -138,6 +138,16 @@ impl ThreadGroup {
             .unwrap();
     }
 
+    /// Waits for shutdown of the `ThreadGroup` to start (i.e., for
+    /// [`ThreadGroup::shut_down`] to be called).
+    pub fn await_start_of_shutdown(&self) {
+        let records = self.records.lock().unwrap();
+        let _guard = self
+            .shutdown_wakeup
+            .wait_while(records, |r| !r.shutting_down)
+            .unwrap();
+    }
+
     /// Returns whether the `ThreadGroup` is shutting down.
     pub fn is_shutting_down(&self) -> bool {
         self.records.lock().unwrap().shutting_down
@@ -642,6 +652,18 @@ mod tests {
         group.await_shutdown();
         assert!(Instant::now().duration_since(start) > SLEEP_DURATION);
         assert_eq!(*exited.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn await_start_of_shutdown_works() {
+        let group = ThreadGroup::new();
+        let group_cloned = group.clone();
+        group
+            .start_oneshot(None, move || group_cloned.await_start_of_shutdown())
+            .unwrap();
+        thread::sleep(Duration::from_millis(100));
+        group.shut_down();
+        group.await_shutdown();
     }
 
     #[test]
