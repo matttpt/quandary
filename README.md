@@ -147,12 +147,18 @@ bind = ["127.0.0.1:53", "[::1]:53"]
 bind.tcp = "[::]:53"
 bind.udp = ["localhost:53", "[::1]:5353"]
 
-# If present, configures the I/O subsystem.
+# If present, configures the I/O subsystem. The default provider,
+# "blocking", uses blocking worker threads.
 [io]
-provider               = "blocking"  # The only available provider for now.
+provider               = "blocking"
 tcp_base_workers       = 4
 tcp_worker_linger      = 15          # In seconds.
 udp_workers_per_socket = 2
+
+# If compiled with the "tokio" feature, a Tokio-based I/O provider is
+# also available. It uses Tokio's multi-threaded runtime.
+[io]
+provider = "tokio"
 
 # If present, configures server options.
 [server]

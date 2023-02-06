@@ -395,6 +395,9 @@ pub trait IoProvider {
 pub enum IoProviderConfig {
     #[serde(rename = "blocking")]
     Blocking(blocking_io::Config),
+    #[cfg(feature = "tokio")]
+    #[serde(rename = "tokio")]
+    Tokio,
 }
 
 impl IoProviderConfig {
@@ -402,6 +405,8 @@ impl IoProviderConfig {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Blocking(_) => "blocking",
+            #[cfg(feature = "tokio")]
+            Self::Tokio => "tokio",
         }
     }
 
@@ -416,6 +421,11 @@ impl IoProviderConfig {
             Self::Blocking(config) => {
                 let io_provider =
                     quandary::io::BlockingIoProvider::bind(config.into(), tcp_addrs, udp_addrs)?;
+                Ok(Box::new(io_provider))
+            }
+            #[cfg(feature = "tokio")]
+            Self::Tokio => {
+                let io_provider = tokio_io::TokioIoProviderShim::bind(tcp_addrs, udp_addrs)?;
                 Ok(Box::new(io_provider))
             }
         }
@@ -486,6 +496,61 @@ mod blocking_io {
                 tcp_worker_linger: Duration::from_secs(toml_config.tcp_worker_linger),
                 udp_workers_per_socket: toml_config.udp_workers_per_socket,
             }
+        }
+    }
+}
+
+/// Support for the [`TokioIoProvider`](quandary::io::TokioIoProvider).
+#[cfg(feature = "tokio")]
+mod tokio_io {
+    use std::io;
+
+    use quandary::io::TokioIoProvider;
+    use tokio::runtime::Runtime;
+
+    use super::*;
+
+    /// A shim allowing the synchronous, thread-based core of the daemon
+    /// to run the [`TokioIoProvider`].
+    pub(super) struct TokioIoProviderShim {
+        inner: TokioIoProvider,
+        runtime: Runtime,
+    }
+
+    impl TokioIoProviderShim {
+        /// Binds a [`TokioIoProvider`] and then wraps it up with its
+        /// [`Runtime`] in a [`TokioIoProviderShim`].
+        pub(super) fn bind<T, U>(tcp_addrs: T, udp_addrs: U) -> io::Result<Self>
+        where
+            T: IntoIterator<Item = SocketAddr>,
+            U: IntoIterator<Item = SocketAddr>,
+        {
+            let runtime = Runtime::new()?;
+            let inner = runtime.block_on(TokioIoProvider::bind(tcp_addrs, udp_addrs))?;
+            Ok(Self { inner, runtime })
+        }
+    }
+
+    impl IoProvider for TokioIoProviderShim {
+        fn supports_graceful_shutdown(&self) -> bool {
+            true
+        }
+
+        fn start(
+            self: Box<Self>,
+            server: &Arc<Server>,
+            group: &Arc<ThreadGroup>,
+        ) -> Result<(), thread::Error> {
+            // The "shim thread" that we create here integrates the
+            // TokioIoProvider with the daemon's core ThreadGroup.
+            let server = server.clone();
+            let group_clone = group.clone();
+            group.start_oneshot(Some(String::from("tokio shim")), move || {
+                let _guard = self.runtime.enter();
+                let shutdown_handle = TokioIoProvider::start(self.inner, &server);
+                group_clone.await_start_of_shutdown();
+                shutdown_handle.blocking_shut_down();
+            })
         }
     }
 }

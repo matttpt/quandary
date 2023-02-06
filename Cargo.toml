@@ -23,6 +23,7 @@ binary = [
     "dep:serde",
     "dep:signal-hook",
     "dep:toml",
+    "tokio?/rt-multi-thread",
 ]
 
 [dependencies]
