@@ -170,7 +170,6 @@ trait Variables {
     fn algorithm(&self) -> &LowercaseName;
     fn time_signed(&self) -> TimeSigned;
     fn fudge(&self) -> u16;
-    fn original_id(&self) -> u16;
     fn error(&self) -> ExtendedRcode;
     fn other(&self) -> &[u8];
 }
@@ -504,10 +503,6 @@ impl Variables for ReadTsigRr<'_> {
         self.fudge()
     }
 
-    fn original_id(&self) -> u16 {
-        self.original_id()
-    }
-
     fn error(&self) -> ExtendedRcode {
         self.error()
     }
@@ -745,10 +740,6 @@ impl Variables for (&LowercaseName, &PreparedTsigRr) {
 
     fn fudge(&self) -> u16 {
         self.1.fudge
-    }
-
-    fn original_id(&self) -> u16 {
-        self.1.original_id
     }
 
     fn error(&self) -> ExtendedRcode {
