@@ -371,7 +371,7 @@ impl Eq for LabelBuf {}
 
 impl PartialOrd for LabelBuf {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.deref().partial_cmp(other.deref())
+        Some(self.cmp(other))
     }
 }
 

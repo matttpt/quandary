@@ -297,7 +297,7 @@ fn validate_zone(zone: &HashMapTreeZone) -> Result<()> {
 /// loaded zones remain loaded (with the old data) if the new data fails
 /// to load.
 fn make_error_catalog_entry(zone_config: ZoneConfig, loaded: Option<&Entry>) -> Entry {
-    loaded.map(Entry::clone).unwrap_or_else(|| {
+    loaded.cloned().unwrap_or_else(|| {
         Entry::FailedToLoad(
             zone_config.name.0,
             zone_config.class.0,

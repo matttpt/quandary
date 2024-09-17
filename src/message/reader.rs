@@ -386,7 +386,7 @@ impl<'r, 'b> PeekRr<'r, 'b> {
 
     /// Advances the parent [`Reader`] to the end of the resource record
     /// without parsing the record.
-    pub fn skip(mut self) {
+    pub fn skip(self) {
         self.reader.cursor = self.rr_end;
     }
 

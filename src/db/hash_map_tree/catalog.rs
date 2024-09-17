@@ -231,7 +231,7 @@ mod tests {
             catalog.remove(&quandary_test, Class::IN),
             Some(Entry::NotYetLoaded(name, Class::IN, ())) if name == quandary_test,
         ));
-        assert!(catalog.roots_by_class.get(&Class::IN).is_none());
+        assert!(!catalog.roots_by_class.contains_key(&Class::IN));
     }
 
     #[test]
