@@ -20,7 +20,7 @@
 
 use std::collections::hash_map::RandomState;
 use std::fmt;
-use std::hash::{BuildHasher, Hash, Hasher};
+use std::hash::{BuildHasher, Hash};
 use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -348,9 +348,7 @@ impl Rrl {
                 // a question available, so the unwrap is okay.
                 &context.question.as_ref().unwrap().qname
             };
-            let mut qname_hasher = self.random_state.build_hasher();
-            qname.hash(&mut qname_hasher);
-            qname_hasher.finish() as u32
+            self.random_state.hash_one(qname) as u32
         } else {
             0
         };
@@ -362,9 +360,7 @@ impl Rrl {
         };
 
         // Find the right bucket.
-        let mut key_hasher = self.random_state.build_hasher();
-        key.hash(&mut key_hasher);
-        let idx = (key_hasher.finish() % self.buckets.len() as u64) as usize;
+        let idx = (self.random_state.hash_one(&key) % self.buckets.len() as u64) as usize;
         let mutex = &self.buckets[idx];
         let mut entry = mutex.lock().unwrap();
 
