@@ -34,7 +34,7 @@
 //! [RFC 2136]). Therefore, we do not implement it here. The remaining
 //! checks are implemented in [`Zone::validate`]. (It should be noted
 //! that check 3 is performed in accordance with the zone's
-//! [`GluePolicy`](super::GluePolicy).)
+//! [`GluePolicy`].)
 //!
 //! In addition, the following checks are also implemented in
 //! [`Zone::validate`]:
